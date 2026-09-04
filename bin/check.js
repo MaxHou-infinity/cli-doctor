@@ -257,7 +257,7 @@ print(json.dumps({'installed': inst, 'cli': cli}))
 
   // outdated（网络，较慢：逐包查版本；--fast 跳过）
   const index = FLAGS.pypiIndex || PYPI;
-  let outdated = {};
+  let outdated = [];
   let mirrorUsed = index;
   if (FLAGS.fast) {
     mirrorUsed = '未检查(--fast，需联网核对)';
