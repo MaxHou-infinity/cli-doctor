@@ -1,5 +1,5 @@
 ---
-name: cli-check-report
+name: cli-doctor
 description: >-
   检查本机各类 CLI 工具与依赖包的版本现状并输出分类报告（只报不升）。
   适用触发场景：用户询问"帮我检查/看看哪些 CLI/工具/依赖需要升级"、"brew/npm/pip 有什么要更新的"、
@@ -9,7 +9,7 @@ description: >-
   输出：默认直接在对话内给出结构化 Markdown 报告；如需可分享存档版本再询问是否转 HTML。
 ---
 
-# CLI-check-report Skill
+# cli-doctor Skill
 
 ## 何时使用
 - 用户想了解本机 CLI 相关工具**版本现状 / 谁需要升级 / 升级风险**。
@@ -27,9 +27,9 @@ description: >-
 优先运行仓库内 CLI（数据一致、快、含分类）：
 ```bash
 # 人类可读报告
-node <本skill目录>/bin/check.js            # 或已发布后: npx cli-check-report
+node <本skill目录>/bin/check.js            # 或已发布后: npx cli-doctor
 # AI 解读用完整数据
-node <本skill目录>/bin/check.js --json     # 或: npx cli-check-report --json
+node <本skill目录>/bin/check.js --json     # 或: npx cli-doctor --json
 ```
 可选参数：`--no-update`（跳过 brew update）、`--pypi-index <url>`（指定 pip 镜像）。
 若本机没有 node / 没有仓库副本，用下面"手工回退命令表"逐项采集。

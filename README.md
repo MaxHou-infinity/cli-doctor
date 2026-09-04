@@ -1,4 +1,4 @@
-# cli-check-report
+# cli-doctor
 
 检查本机 CLI 工具与依赖包的版本现状，输出**分类报告**，**只报不升**，升级决定权交给你。
 
@@ -7,19 +7,19 @@
 ## 快速开始（npx）
 ```bash
 # 人类可读的分类报告
-npx cli-check-report
+npx cli-doctor
 
 # AI/Agent 解读用的完整结构化数据
-npx cli-check-report --json
+npx cli-doctor --json
 
 # 把配套 SKILL 装进 agent 的 skills 目录（Claude Code / Hermes 等）
-npx cli-check-report install                # 自动探测 ~/.claude/skills 等
-npx cli-check-report install --to ~/.claude/skills
+npx cli-doctor install                # 自动探测 ~/.claude/skills 等
+npx cli-doctor install --to ~/.claude/skills
 ```
 
 ## 本地开发运行
 ```bash
-git clone <repo-url> && cd cli-check-report
+git clone <repo-url> && cd cli-doctor
 node bin/check.js            # 或 npm test
 node bin/check.js --json
 ```

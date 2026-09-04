@@ -1,14 +1,14 @@
 #!/usr/bin/env node
 /**
- * cli-check-report — 本机 CLI 工具 / 依赖包版本现状检查器（只报不升）
+ * cli-doctor — 本机 CLI 工具 / 依赖包版本现状检查器（只报不升）
  *
  * 用法:
- *   cli-check-report                 # 默认: 人类可读的分类 Markdown 报告
- *   cli-check-report --json         # 输出完整结构化 JSON（供 AI/Agent 解读）
- *   cli-check-report --no-update    # 跳过 brew update / 慢速刷新，只做查询
- *   cli-check-report --fast         # 快速模式: 各管理器均跳过耗时网络刷新
- *   cli-check-report --pypi-index <url>   # 指定 pip 镜像(默认 pypi.org, 失败自动切 tuna)
- *   cli-check-report install [--to <dir>] # 把配套 SKILL 安装进 agent skills 目录
+ *   cli-doctor                 # 默认: 人类可读的分类 Markdown 报告
+ *   cli-doctor --json         # 输出完整结构化 JSON（供 AI/Agent 解读）
+ *   cli-doctor --no-update    # 跳过 brew update / 慢速刷新，只做查询
+ *   cli-doctor --fast         # 快速模式: 各管理器均跳过耗时网络刷新
+ *   cli-doctor --pypi-index <url>   # 指定 pip 镜像(默认 pypi.org, 失败自动切 tuna)
+ *   cli-doctor install [--to <dir>] # 把配套 SKILL 安装进 agent skills 目录
  *
  * 设计: 无第三方依赖，Node >= 18。全部检查只读；升级永远由用户决定。
  */
@@ -438,7 +438,7 @@ function collectSelfUpdating() {
   }
   // 用户自定义扩展
   try {
-    const cfg = JSON.parse(fs.readFileSync(path.join(home(), '.config', 'cli-check-report', 'self-updating.json'), 'utf8'));
+    const cfg = JSON.parse(fs.readFileSync(path.join(home(), '.config', 'cli-doctor', 'self-updating.json'), 'utf8'));
     for (const it of cfg.tools || []) {
       if (found.some((f) => f.name === it.name)) continue;
       const exe = which(it.name);
@@ -448,7 +448,7 @@ function collectSelfUpdating() {
   } catch {}
   report.managers.self_updating = {
     tools: found, deps: [], tool_count: found.length, outdated_tool_count: 0,
-    note: '这类工具无统一升级渠道，通常自带 update 或需重装官方安装脚本；最新版本需各自确认。可在 ~/.config/cli-check-report/self-updating.json 扩展名单。',
+    note: '这类工具无统一升级渠道，通常自带 update 或需重装官方安装脚本；最新版本需各自确认。可在 ~/.config/cli-doctor/self-updating.json 扩展名单。',
   };
 }
 
@@ -561,7 +561,7 @@ function installCmd() {
     if (!to) to = path.join(home(), '.claude', 'skills');
   }
   const src = path.join(__dirname, '..');
-  const dst = path.join(to, 'cli-check-report');
+  const dst = path.join(to, 'cli-doctor');
   fs.mkdirSync(dst, { recursive: true });
   const files = ['SKILL.md'];
   for (const f of files) {
