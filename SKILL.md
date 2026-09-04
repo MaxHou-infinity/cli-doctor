@@ -32,7 +32,7 @@ description: >-
 node <本skill目录>/bin/check.js --json
 ```
 > 通过 npx 从 GitHub 源运行时，npm 12+ 需加放行参数：
-> `npx --yes --allow-git=all github:MaxHou-infinity/cli-doctor [--json|--fast|install --to <目录>]`
+> `npx --yes --allow-git=all github:MaxHou-infinity/cli-doctor [--json|--fast]`
 > （也可一次性 `npm config set allow-git all`。）
 可选参数：`--fast`（跳过网络刷新与版本比对）、`--no-update`（跳过 brew update）、`--pypi-index <url>`（指定 pip 镜像）。
 若本机没有 node / 没有仓库副本，用下面"手工回退命令表"逐项采集。

@@ -8,7 +8,6 @@
  *   cli-doctor --no-update    # 跳过 brew update / 慢速刷新，只做查询
  *   cli-doctor --fast         # 快速模式: 各管理器均跳过耗时网络刷新
  *   cli-doctor --pypi-index <url>   # 指定 pip 镜像(默认 pypi.org, 失败自动切 tuna)
- *   cli-doctor install [--to <dir>] # 把配套 SKILL 安装进 agent skills 目录
  *
  * 设计: 无第三方依赖，Node >= 18。全部检查只读；升级永远由用户决定。
  */
@@ -44,8 +43,6 @@ function which(bin) {
 function exists(p) { try { fs.accessSync(p); return true; } catch { return false; } }
 
 function home() { return os.homedir(); }
-
-function expand(p) { return p.replace(/^~/, home()); }
 
 async function fetchText(url, timeoutMs = 8000) {
   const ctrl = new AbortController();
@@ -108,8 +105,7 @@ if (argv.includes('--help') || argv.includes('-h')) {
   cli-doctor --json                  输出结构化 JSON
   cli-doctor --fast                  跳过网络刷新与版本比对
   cli-doctor --no-update             跳过 brew update
-  cli-doctor --pypi-index <url>      指定 pip 镜像
-  cli-doctor install --to <目录>     安装自包含 Skill（SKILL.md + bin/check.js）`);
+  cli-doctor --pypi-index <url>      指定 pip 镜像`);
   process.exit(0);
 }
 
@@ -119,7 +115,10 @@ if (argv.includes('--version') || argv.includes('-v')) {
   process.exit(0);
 }
 
-if (argv[0] === 'install') return installCmd();
+if (argv[0] === 'install') {
+  console.error('install 子命令已弃用。请使用: npx skills@latest add MaxHou-infinity/cli-doctor');
+  process.exit(2);
+}
 
 /* ---------------------------------- 各管理器采集 ---------------------------------- */
 
@@ -564,37 +563,6 @@ function markdown() {
   L.push(`- 跳过项：${report.skipped.length ? report.skipped.join('；') : '无'}`);
   L.push('');
   return L.join('\n');
-}
-
-/* ---------------------------------- install 子命令 ---------------------------------- */
-
-function installCmd() {
-  let to = null;
-  const i = argv.indexOf('--to');
-  if (i >= 0 && argv[i + 1]) to = expand(argv[i + 1]);
-  if (!to) {
-    const cands = [
-      path.join(home(), '.claude', 'skills'),
-      path.join(home(), '.hermes', 'skills'),
-      path.join(home(), '.config', 'skills'),
-    ];
-    for (const c of cands) { if (exists(c)) { to = c; break; } }
-    if (!to) to = path.join(home(), '.claude', 'skills');
-  }
-  const src = path.join(__dirname, '..');
-  const dst = path.join(to, 'cli-doctor');
-  fs.mkdirSync(dst, { recursive: true });
-  const files = ['SKILL.md', path.join('bin', 'check.js'), 'package.json'];
-  for (const f of files) {
-    const s = path.join(src, f), d = path.join(dst, f);
-    if (!exists(s)) { console.error(`缺少文件: ${s}`); process.exit(1); }
-    fs.mkdirSync(path.dirname(d), { recursive: true });
-    fs.copyFileSync(s, d);
-  }
-  console.log(`✅ Skill 已安装到 ${dst}`);
-  console.log('包含: ' + files.join(', '));
-  console.log('若你的 agent 使用其它 skills 目录，请用 --to <目录> 重装。');
-  process.exit(0);
 }
 
 /* ---------------------------------- 主流程 ---------------------------------- */

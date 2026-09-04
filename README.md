@@ -1,7 +1,5 @@
 # cli-doctor
 
-[![skills.sh](https://skills.sh/b/MaxHou-infinity/cli-doctor)](https://skills.sh/MaxHou-infinity/cli-doctor)
-
 ![cli-doctor hero](assets/cli-doctor-hero.png)
 
 在升级之前，先看清你的 CLI 环境。
@@ -24,7 +22,7 @@
 
 ## 30 秒安装 Agent Skill
 
-推荐使用开放的 `skills` CLI。它会自动发现仓库中的 `cli-doctor`，并安装到你选择的 Agent：
+使用开放的 `skills` CLI。它会自动发现仓库中的 `cli-doctor`，并安装到对应 Agent 的正确目录，无需手动填写 Claude、Codex 或其他 Agent 的本地路径：
 
 ```bash
 # 交互式选择安装范围和 Agent
@@ -40,16 +38,6 @@ npx skills@latest add MaxHou-infinity/cli-doctor \
 ```
 
 安装后请开启一个新对话，让 Agent 重新发现 Skill。
-
-### 兼容安装方式
-
-仓库仍保留自包含安装器，会一起复制 `SKILL.md`、`bin/check.js` 和版本元数据：
-
-```bash
-npx --yes --allow-git=all github:MaxHou-infinity/cli-doctor install --to ~/.claude/skills
-```
-
-npm 12+ 从 GitHub 源执行时需要 `--allow-git=all`。如果经常使用，可以执行一次 `npm config set allow-git all`。
 
 ## 自然语言激活
 
