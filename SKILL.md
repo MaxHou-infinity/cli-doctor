@@ -24,17 +24,17 @@ description: >-
 ## 执行步骤
 
 ### 第 1 步：采集数据
-优先运行仓库内 CLI（数据一致、快、含分类）：
+优先运行 Skill 自带的 CLI（数据一致、可离线运行、含分类）：
 ```bash
 # 人类可读报告
-node <本skill目录>/bin/check.js            # 或已发布后: npx cli-doctor
+node <本skill目录>/bin/check.js
 # AI 解读用完整数据
-node <本skill目录>/bin/check.js --json     # 或: npx cli-doctor --json
+node <本skill目录>/bin/check.js --json
 ```
 > 通过 npx 从 GitHub 源运行时，npm 12+ 需加放行参数：
 > `npx --yes --allow-git=all github:MaxHou-infinity/cli-doctor [--json|--fast|install --to <目录>]`
 > （也可一次性 `npm config set allow-git all`。）
-可选参数：`--no-update`（跳过 brew update）、`--pypi-index <url>`（指定 pip 镜像）。
+可选参数：`--fast`（跳过网络刷新与版本比对）、`--no-update`（跳过 brew update）、`--pypi-index <url>`（指定 pip 镜像）。
 若本机没有 node / 没有仓库副本，用下面"手工回退命令表"逐项采集。
 
 ### 第 2 步：分类与分块（报告骨架固定）

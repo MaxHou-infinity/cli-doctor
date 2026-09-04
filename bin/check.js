@@ -97,6 +97,25 @@ const FLAGS = {
   })(),
 };
 
+if (argv.includes('--help') || argv.includes('-h')) {
+  console.log(`cli-doctor — 检查本机 CLI 工具与依赖包版本（只报不升）
+
+用法:
+  cli-doctor                         输出 Markdown 报告
+  cli-doctor --json                  输出结构化 JSON
+  cli-doctor --fast                  跳过网络刷新与版本比对
+  cli-doctor --no-update             跳过 brew update
+  cli-doctor --pypi-index <url>      指定 pip 镜像
+  cli-doctor install --to <目录>     安装自包含 Skill（SKILL.md + bin/check.js）`);
+  process.exit(0);
+}
+
+if (argv.includes('--version') || argv.includes('-v')) {
+  const pkg = JSON.parse(fs.readFileSync(path.join(__dirname, '..', 'package.json'), 'utf8'));
+  console.log(pkg.version);
+  process.exit(0);
+}
+
 if (argv[0] === 'install') return installCmd();
 
 /* ---------------------------------- 各管理器采集 ---------------------------------- */
@@ -173,8 +192,10 @@ function collectNpm() {
   try { installed = (JSON.parse(lsRaw).dependencies) || {}; } catch {}
 
   let outdatedRaw = '';
-  const r = sh('npm', ['outdated', '-g', '--json=true'], { timeout: 60000 });
-  outdatedRaw = r.out; // npm outdated 退出码为 1 表示"有可升级"，stdout 仍有 JSON
+  if (!FLAGS.fast) {
+    const r = sh('npm', ['outdated', '-g', '--json=true'], { timeout: 60000 });
+    outdatedRaw = r.out; // npm outdated 退出码为 1 表示"有可升级"，stdout 仍有 JSON
+  }
   let outdated = {};
   try { outdated = JSON.parse(outdatedRaw) || {}; } catch {}
 
@@ -201,6 +222,7 @@ function collectNpm() {
     deps: [],
     tool_count: tools.length,
     outdated_tool_count: tools.filter((t) => t.outdated).length,
+    latest_checked: !FLAGS.fast,
     upgrade_all_cmd: 'npm i -g <需要升级的包>@latest（逐个）',
     note: 'npm 12+ 默认拦截 install 脚本；如升级后工具报错，按提示运行 npm i -g --allow-scripts=<pkg>。正在运行的 CLI（如 dsh 自身）建议避开运行期升级。',
   };
@@ -309,6 +331,7 @@ print(json.dumps({'installed': inst, 'cli': cli}))
   report.managers.python_pip = {
     python: py,
     mirror_used: mirrorUsed,
+    latest_checked: !FLAGS.fast,
     tools,
     deps: deps.sort((a, b) => a.name.localeCompare(b.name)),
     tool_count: tools.length,
@@ -321,7 +344,7 @@ print(json.dumps({'installed': inst, 'cli': cli}))
 
 /* ---- Rust / Bun / uv ---- */
 async function collectRustBunUv() {
-  const m = { tools: [], deps: [], tool_count: 0, outdated_tool_count: 0 };
+  const m = { tools: [], deps: [], tool_count: 0, outdated_tool_count: 0, latest_checked: !FLAGS.fast };
 
   const rustc = which('rustc');
   if (rustc) {
@@ -351,8 +374,10 @@ async function collectRustBunUv() {
   if (bun) {
     const cur = shOut('bun', ['--version'], { timeout: 8000 });
     let latest = null;
-    const t = await fetchText('https://registry.npmjs.org/bun/latest', 6000);
-    if (t) { try { latest = JSON.parse(t).version; } catch {} }
+    if (!FLAGS.fast) {
+      const t = await fetchText('https://registry.npmjs.org/bun/latest', 6000);
+      if (t) { try { latest = JSON.parse(t).version; } catch {} }
+    }
     m.tools.push({
       name: 'bun', current: cur || '未知', latest, outdated: latest ? gtVer(latest, cur || '0') : null,
       upgrade_cmd: 'bun upgrade', category: 'bun',
@@ -365,7 +390,7 @@ async function collectRustBunUv() {
   if (uv) {
     const curRaw = shOut('uv', ['--version'], { timeout: 8000 });
     const cur = (curRaw.match(/uv ([\d.]+)/) || [])[1] || curRaw;
-    let latest = await latestFromMirror('uv');
+    let latest = FLAGS.fast ? null : await latestFromMirror('uv');
     m.tools.push({
       name: 'uv', current: cur || '未知', latest, outdated: latest ? gtVer(latest, cur || '0') : null,
       upgrade_cmd: 'uv self update', category: 'uv',
@@ -374,7 +399,7 @@ async function collectRustBunUv() {
     for (const line of toolRaw.split('\n')) {
       const mm = line.match(/^(\S+)\s+v([\d.]+[^\s]*)/);
       if (!mm) continue;
-      let latest2 = await latestFromMirror(mm[1]);
+      let latest2 = FLAGS.fast ? null : await latestFromMirror(mm[1]);
       m.tools.push({
         name: `uv-tool:${mm[1]}`, current: mm[2], latest: latest2,
         outdated: latest2 ? gtVer(latest2, mm[2]) : null,
@@ -495,15 +520,15 @@ function markdown() {
     const upd = mNpm.tools.filter((t) => t.outdated);
     const ok = mNpm.tools.filter((t) => !t.outdated);
     let s = `### npm 全局（工具 ${mNpm.tool_count} 个`;
-    s += upd.length ? `，**${upd.length} 个可升级**）` : '，全部最新 ✅）';
-    toolSections.push([s, mdTable(upd.map((t) => ({ ...t, note: t.major_jump ? '⚠️ 大版本跳跃' : (t.note || '') }))), ok.length ? `已最新：${ok.map((t) => t.name).join('、')}` : '']);
+    s += upd.length ? `，**${upd.length} 个可升级**）` : (mNpm.latest_checked === false ? '，未联网核对）' : '，全部最新 ✅）');
+    toolSections.push([s, mdTable(upd.map((t) => ({ ...t, note: t.major_jump ? '⚠️ 大版本跳跃' : (t.note || '') }))), ok.length ? (mNpm.latest_checked === false ? `已安装（未核对最新版本）：${ok.map((t) => t.name).join('、')}` : `已最新：${ok.map((t) => t.name).join('、')}`) : '']);
   }
   if (mPip) {
     const upd = mPip.tools.filter((t) => t.outdated);
     const ok = mPip.tools.filter((t) => !t.outdated);
     let s = `### Python/pip — ${mPip.python || 'python3'}（工具 ${mPip.tool_count} 个`;
-    s += upd.length ? `，**${upd.length} 个可升级**；镜像: ${mPip.mirror_used}）` : `，全部最新 ✅；镜像: ${mPip.mirror_used}）`;
-    toolSections.push([s, mdTable(upd.map((t) => ({ ...t, note: (t.major_jump ? '⚠️ 大版本跳跃 ' : '') + '命令: ' + (t.bin || '') }))), ok.length ? `已最新（CLI 类）：${ok.map((t) => t.name).join('、')}` : '']);
+    s += upd.length ? `，**${upd.length} 个可升级**；镜像: ${mPip.mirror_used}）` : (mPip.latest_checked === false ? `，未联网核对；镜像: ${mPip.mirror_used}）` : `，全部最新 ✅；镜像: ${mPip.mirror_used}）`);
+    toolSections.push([s, mdTable(upd.map((t) => ({ ...t, note: (t.major_jump ? '⚠️ 大版本跳跃 ' : '') + '命令: ' + (t.bin || '') }))), ok.length ? (mPip.latest_checked === false ? `已安装（CLI 类，未核对最新版本）：${ok.map((t) => t.name).join('、')}` : `已最新（CLI 类）：${ok.map((t) => t.name).join('、')}`) : '']);
   }
   if (mRust) {
     const upd = mRust.tools.filter((t) => t.outdated);
@@ -522,7 +547,7 @@ function markdown() {
     depSections.push([`### Python/pip 依赖库（${mPip.outdated_dep_count} 个可升级）`, mdTable(mPip.deps.slice(0, 12)) + (mPip.outdated_dep_count > 12 ? `\n…共 ${mPip.outdated_dep_count} 项，完整见 --json` : '')]);
   }
   if (mPip && !mPip.outdated_dep_count) {
-    depSections.push(['### Python/pip 依赖库', '  全部最新 ✅']);
+    depSections.push(['### Python/pip 依赖库', mPip.latest_checked === false ? '  未联网核对，完整状态请去掉 `--fast` 后复查。' : '  全部最新 ✅']);
   }
 
   L.push('## 一、工具类');
@@ -563,10 +588,11 @@ function installCmd() {
   const src = path.join(__dirname, '..');
   const dst = path.join(to, 'cli-doctor');
   fs.mkdirSync(dst, { recursive: true });
-  const files = ['SKILL.md'];
+  const files = ['SKILL.md', path.join('bin', 'check.js')];
   for (const f of files) {
     const s = path.join(src, f), d = path.join(dst, f);
     if (!exists(s)) { console.error(`缺少文件: ${s}`); process.exit(1); }
+    fs.mkdirSync(path.dirname(d), { recursive: true });
     fs.copyFileSync(s, d);
   }
   console.log(`✅ Skill 已安装到 ${dst}`);

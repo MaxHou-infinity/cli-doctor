@@ -3,6 +3,14 @@
   "version": "0.1.0",
   "description": "检查本机 CLI 工具与依赖包的版本现状（Homebrew / npm 全局 / Python pip / Rust·Bun·uv / 自更新类），输出分类报告，只报不升。附带 install 子命令可将配套 SKILL 安装进 agent 的 skills 目录。",
   "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/MaxHou-infinity/cli-doctor.git"
+  },
+  "homepage": "https://github.com/MaxHou-infinity/cli-doctor#readme",
+  "bugs": {
+    "url": "https://github.com/MaxHou-infinity/cli-doctor/issues"
+  },
   "bin": {
     "cli-doctor": "./bin/check.js"
   },
@@ -11,6 +19,7 @@
   },
   "files": [
     "bin",
+    "assets",
     "SKILL.md",
     "README.md"
   ],
@@ -21,7 +30,17 @@
     "npm",
     "pip",
     "skill",
-    "check"
+    "check",
+    "cli-health",
+    "dependency-audit",
+    "version-checker",
+    "developer-tools",
+    "agent-skill",
+    "macos",
+    "brew",
+    "bun",
+    "rustup",
+    "uv"
   ],
   "scripts": {
     "test": "node bin/check.js --no-update --fast"
