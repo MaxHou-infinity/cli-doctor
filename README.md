@@ -4,17 +4,16 @@
 
 覆盖：Homebrew · npm 全局 · Python/pip（区分 CLI 工具与库依赖）· Rust / Bun / uv 等自管理工具 · 无统一升级渠道的 CLI（hermes / agy / bsk 等）。
 
-## 快速开始（npx）
+## 快速开始（npx，从 GitHub 源）
 ```bash
-# 人类可读的分类报告
-npx cli-doctor
+# 人类可读的分类报告（npm 12+ 需加 --allow-git=all；或先执行 npm config set allow-git all 放行一次）
+npx --yes --allow-git=all github:MaxHou-infinity/cli-doctor
 
 # AI/Agent 解读用的完整结构化数据
-npx cli-doctor --json
+npx --yes --allow-git=all github:MaxHou-infinity/cli-doctor --json
 
 # 把配套 SKILL 装进 agent 的 skills 目录（Claude Code / Hermes 等）
-npx cli-doctor install                # 自动探测 ~/.claude/skills 等
-npx cli-doctor install --to ~/.claude/skills
+npx --yes --allow-git=all github:MaxHou-infinity/cli-doctor install --to ~/.claude/skills
 ```
 
 ## 本地开发运行
