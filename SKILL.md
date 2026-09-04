@@ -1,5 +1,12 @@
 ---
 name: cli-doctor
+version: "0.1.4"
+display_name: CLI 工具版本体检
+display_name_en: CLI Doctor
+description_zh: >-
+  只读检查本机 CLI 工具与依赖包的版本状态、过期情况、依赖耦合和升级风险，覆盖 Homebrew、npm 全局、Python/pip、Rust、Bun、uv 及无统一升级渠道的命令行工具。
+description_en: >-
+  Read-only diagnosis of installed CLI tools and dependencies, including versions, outdated status, dependency coupling, and upgrade risks across Homebrew, global npm, Python/pip, Rust, Bun, uv, and self-updating command-line tools.
 description: >-
   Read-only diagnosis of installed CLI tools, package-manager versions, outdated status,
   dependency coupling, and upgrade risks. Use when a user asks in any language to check,

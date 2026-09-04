@@ -1,6 +1,6 @@
 {
   "name": "cli-doctor",
-  "version": "0.1.3",
+  "version": "0.1.4",
   "description": "检查本机 CLI 工具与依赖包的版本现状（Homebrew / npm 全局 / Python pip / Rust·Bun·uv / 自更新类），输出分类报告，只报不升。",
   "license": "MIT",
   "repository": {
