@@ -1,12 +1,15 @@
 ---
 name: cli-doctor
 description: >-
-  检查本机各类 CLI 工具与依赖包的版本现状并输出分类报告（只报不升）。
-  适用触发场景：用户询问"帮我检查/看看哪些 CLI/工具/依赖需要升级"、"brew/npm/pip 有什么要更新的"、
-  "检查一下我电脑里的工具版本"、升级前想先看风险与耦合关系，或升级后想验证是否已全部到位。
-  覆盖范围：Homebrew、npm 全局、Python/pip（含 CLI 与库分类）、Rust / Bun / uv 等自管理工具、
-  无统一升级渠道的 CLI 工具（hermes/agy/bsk 等）。
-  输出：默认直接在对话内给出结构化 Markdown 报告；如需可分享存档版本再询问是否转 HTML。
+  Read-only diagnosis of installed CLI tools, package-manager versions, outdated status,
+  dependency coupling, and upgrade risks. Use when a user asks in any language to check,
+  diagnose, audit, review, verify, inspect, or troubleshoot CLI tools, command-line utilities,
+  developer tools, or package versions. Example intents: “帮我检查或诊断 CLI 工具版本状态”,
+  “check or audit my CLI tool versions”, “CLIツールのバージョンと更新状況を確認”,
+  “revisar las versiones de mis herramientas CLI”. Covers Homebrew, global npm packages,
+  Python/pip, Rust/Bun/uv, and CLIs without a unified update channel. Produces a fixed-category,
+  fixed-section, seven-field Markdown decision report directly in the conversation. Do not use
+  for project-only dependency updates, and never perform upgrades without explicit authorization.
 ---
 
 # cli-doctor Skill
@@ -24,11 +27,8 @@ description: >-
 ## 执行步骤
 
 ### 第 1 步：采集数据
-优先运行 Skill 自带的 CLI（数据一致、可离线运行、含分类）：
+运行 Skill 自带 CLI 的 JSON 模式，作为 Agent 分析输入：
 ```bash
-# 人类可读报告
-node <本skill目录>/bin/check.js
-# AI 解读用完整数据
 node <本skill目录>/bin/check.js --json
 ```
 > 通过 npx 从 GitHub 源运行时，npm 12+ 需加放行参数：
@@ -47,16 +47,34 @@ node <本skill目录>/bin/check.js --json
   - rust：rustup 组件（rustc/clippy/rustfmt）≠ cargo install 的第三方工具；uv tools 单独列。
   - 无统一渠道：hermes/agy/bsk/browse-now/luckin 等，各自自查，不做自动版本比对。
 
-### 第 3 步：按模板出报告（对话内 Markdown，逐条含五要素）
-对每个**待升级项**，输出表格列：`工具/包 | 当前 | 最新 | 升级命令 | 作用 | 耦合 | 风险`。
+### 第 3 步：生成最终报告（强制输出契约）
 
-每条必须补充（CLI 给的是数据，下面三列是你的增值）：
-- **作用**：一句话说明这工具/库干嘛的（用你的知识与本机上下文判断）。
-- **耦合**：它被谁依赖 / 它锁定了谁（例：某 CLI 把 fastmcp 锁在 ==3.2.4；markitdown→magika~=0.6.1；sympy→mpmath<1.4）。
-  手工查证手段：`npm ls -g <pkg>`、pip 用 `grep -r 'Requires-Dist: <pkg>' <site-packages>/*.dist-info/METADATA`、`brew uses --installed <pkg>`。
-- **风险**：大版本跳跃（⚠️ 配置/命令/API 可能变）、升级会连带降级其它包、正在运行中、需重启服务、官方已停更（建议迁替代品）等。
+默认直接在 Agent 对话中输出 Markdown，不创建额外文件。CLI 的 Markdown 模式只是采集层摘要，**不得直接复制为 Skill 的最终答案**。
 
-报告头部：说明"只读检查、未升级"；中部按 工具类→依赖包类 分块；依赖包类默认给**摘要**（数量 + 高风险/有锁链的前几项 + "完整清单见 --json"），不要几百行全贴。尾部：给"整体建议"与"可直接复制的升级命令（按 manager 分组）"，但强调逐项确认后再执行。
+报告层级和顺序固定：
+
+1. **工具类**
+   - Homebrew
+   - npm 全局
+   - Python / pip
+   - Rust / Bun / uv 等自管理工具
+   - 无统一升级渠道的 CLI
+2. **依赖包类**
+   - 按同样的管理器顺序展示存在的结果；没有结果时明确写“无待升级项”。
+
+每个**待升级项或待核验项**都必须使用以下七字段，不能用“备注”合并或替代后三列：
+
+`工具名称 | 当前版本 | 最新版本 | 手动升级命令 | 作用说明 | 耦合关系说明 | 风险说明`
+
+- **作用说明**：说明工具或依赖在当前环境中的用途。无法可靠判断时写“需结合实际用途确认”，不要猜测。
+- **耦合关系说明**：说明直接依赖、被依赖、版本锁定、PATH 同名覆盖或服务关系；确认无明显耦合时写“未发现明显耦合”。查证可使用 `npm ls -g <pkg>`、Python 包 metadata、`brew uses --installed <pkg>`、`which <cmd>`。
+- **风险说明**：结合大版本跳跃、破坏性变更、共享依赖、运行中进程、服务重启、安装脚本和来源不明等事实分级说明。没有发现特殊风险时写“低：常规版本升级”，不能留空。
+
+已经核验为最新的项目可以在对应分块下用名称列表汇总，不必逐项生成七字段表格；但不得把“未联网核验”写成“全部最新”。所有待升级项必须完整展示，不能因数量多而只放在 `--json` 中。
+
+报告头部必须说明“只读检查、未执行升级”和检查时间；尾部给出整体建议及按管理器分组的可复制升级命令，并强调这些命令尚未执行。
+
+只有用户明确要求可分享、存档、管理层展示或 HTML 时，才调用可用的 HTML 设计 Skill 生成 HTML；HTML 是附加产物，不能取代对话内的 Markdown 结论。
 
 ### 第 4 步：收尾
 - 若用户让"全部升级"，仍需逐项先自检：排除正在运行的 CLI 自身、标出大版本跳跃项让其知情、提醒 npm allow-scripts、升级后 brew 服务类（postgres 等）`brew services restart <name>`。

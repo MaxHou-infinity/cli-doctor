@@ -1,5 +1,7 @@
 # cli-doctor
 
+[![skills.sh](https://skills.sh/b/MaxHou-infinity/cli-doctor)](https://skills.sh/MaxHou-infinity/cli-doctor)
+
 ![cli-doctor hero](assets/cli-doctor-hero.png)
 
 在升级之前，先看清你的 CLI 环境。
@@ -17,43 +19,73 @@
 - 区分工具与依赖包，避免把几百个库都当成“应该升级的工具”
 - 标出大版本跳跃、锁版本依赖和需要各自核验的工具
 - 给出可复制的升级命令，但不会自动执行任何升级
-- 默认输出 Markdown；使用 `--json` 时可交给 AI/Agent 做作用、耦合和风险解读
+- CLI 可输出 Markdown 采集摘要；配套 Agent Skill 使用 `--json` 生成包含作用、耦合和风险的七字段决策报告
 - 支持升级后复跑，核对哪些项目已经到位、哪些是刻意保留的版本
 
-## 30 秒开始
+## 30 秒安装 Agent Skill
 
-无需克隆仓库，直接从 GitHub 运行：
+推荐使用开放的 `skills` CLI。它会自动发现仓库中的 `cli-doctor`，并安装到你选择的 Agent：
 
 ```bash
-# 人类可读报告
-npx --yes --allow-git=all github:MaxHou-infinity/cli-doctor
+# 交互式选择安装范围和 Agent
+npx skills@latest add MaxHou-infinity/cli-doctor
 
-# 给 AI / Agent 的完整结构化数据
-npx --yes --allow-git=all github:MaxHou-infinity/cli-doctor --json
+# 全局安装到 Codex
+npx skills@latest add MaxHou-infinity/cli-doctor \
+  --skill cli-doctor --global --agent codex --yes
+
+# 全局安装到所有受支持的 Agent
+npx skills@latest add MaxHou-infinity/cli-doctor \
+  --skill cli-doctor --global --agent '*' --yes
 ```
 
-> npm 12+ 运行 GitHub 源时需要 `--allow-git=all`。如果你经常使用，可以执行一次 `npm config set allow-git all`，之后省略该参数。
+安装后请开启一个新对话，让 Agent 重新发现 Skill。
 
-## 安装配套 Agent Skill
+### 兼容安装方式
 
-方案 A 会安装一个自包含 Skill：`SKILL.md` 和它需要的 `bin/check.js` 会一起复制，不依赖仓库路径。
+仓库仍保留自包含安装器，会一起复制 `SKILL.md`、`bin/check.js` 和版本元数据：
 
 ```bash
 npx --yes --allow-git=all github:MaxHou-infinity/cli-doctor install --to ~/.claude/skills
 ```
 
-也可以安装到其他 Agent 的 skills 目录：
+npm 12+ 从 GitHub 源执行时需要 `--allow-git=all`。如果经常使用，可以执行一次 `npm config set allow-git all`。
 
-```bash
-npx --yes --allow-git=all github:MaxHou-infinity/cli-doctor install --to <你的 skills 目录>
+## 自然语言激活
+
+安装后无需记忆命令，可以直接表达检查意图：
+
+```text
+帮我检查我的 CLI 类工具版本状态
+帮我诊断命令行工具有没有过期
+看看 brew、npm、pip 有哪些需要更新
+检查开发环境里的工具和依赖版本
+
+Check the status of my installed CLI tools
+Audit my command-line tools for outdated versions
+Diagnose CLI dependency and upgrade risks
+
+CLIツールのバージョンと更新状況を確認して
+Revisar las versiones de mis herramientas CLI
 ```
 
-安装后，Agent 可以在这些场景调用它：
+自然语言由各 Agent 进行语义匹配；需要确定调用时，可以使用显式名称：
 
-- “帮我看看电脑里哪些 CLI 需要升级”
-- “brew、npm、pip 最近有什么更新”
-- “升级前帮我评估风险和依赖耦合”
-- “我刚升级完，帮我复核一下”
+```text
+使用 $cli-doctor 检查我的 CLI 工具版本
+```
+
+## 只运行 CLI
+
+无需安装 Skill，也可以直接从 GitHub 执行采集器：
+
+```bash
+# 人类可读的采集摘要
+npx --yes --allow-git=all github:MaxHou-infinity/cli-doctor
+
+# 给 AI / Agent 的完整结构化数据
+npx --yes --allow-git=all github:MaxHou-infinity/cli-doctor --json
+```
 
 ## 常用命令
 
@@ -75,18 +107,24 @@ npx --yes --allow-git=all github:MaxHou-infinity/cli-doctor --version
 
 `--fast` 下未联网核验的项目会显示为“需自查”，不会被误报为“全部最新”。
 
-## 报告怎么看
+## CLI 摘要与 Agent 最终报告
 
-报告按两层组织：
+CLI 负责采集版本事实；Agent Skill 负责把事实转成可用于升级决策的最终报告。两者不会混为一层。
+
+Agent 最终报告默认直接显示在对话界面，不创建额外文件，并按两层组织：
 
 1. **工具类**：Homebrew、npm 全局、Python CLI、Rust/Bun/uv、自更新 CLI
 2. **依赖包类**：由工具带入的共享库和底层依赖，默认只展示摘要
 
-每个可升级项会提供当前版本、最新版本、升级命令和探测备注。把 `--json` 输出交给 AI 后，还可以继续补充：
+每个待升级或待核验项必须使用固定七字段模板：
 
-- 作用：它在你的工作流中负责什么
-- 耦合：谁依赖它、它锁定了哪些版本
-- 风险：大版本变化、服务重启、运行期升级和 PATH 冲突
+| 工具名称 | 当前版本 | 最新版本 | 手动升级命令 | 作用说明 | 耦合关系说明 | 风险说明 |
+|---|---|---|---|---|---|---|
+| 示例工具 | 1.0.0 | 2.0.0 | `manager upgrade example` | 说明实际用途 | 说明依赖、版本锁定或 PATH 关系 | 说明大版本、服务或兼容性风险 |
+
+已核验为最新的项目会在对应分块中汇总；所有待升级项都会完整展示，不会只隐藏在 JSON 中。未联网核验的项目会明确标记为“待核验”，不会误报为“全部最新”。
+
+HTML 不是默认输出。只有用户明确要求分享、存档或管理层展示时，Agent 才生成额外的 HTML 报告。
 
 ## 覆盖范围
 

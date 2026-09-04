@@ -68,6 +68,9 @@ function gtVer(a, b) {
   }
   return false;
 }
+function normalizePackageName(name) {
+  return String(name || '').trim().toLowerCase().replace(/[-_.]+/g, '-');
+}
 
 /* ---------------------------------- 常量配置 ---------------------------------- */
 
@@ -245,37 +248,27 @@ function collectPython() {
 
   // 已装包 + 是否提供 CLI（console_scripts 反查）
   const probe = sh(py, ['-c', `
-import json, glob, os, configparser
-sp = None
-try:
-    import site; sp = site.getsitepackages()[0]
-except Exception:
-    sp = os.path.join(os.path.dirname(os.__file__), 'site-packages')
+import json, re
+from importlib import metadata
+
+def normalize(name):
+    return re.sub(r'[-_.]+', '-', (name or '').strip().lower())
+
 inst = {}
-for d in glob.glob(os.path.join(sp, '*.dist-info')):
-    n = d.split(os.sep)[-1].replace('.dist-info','')
-    ver = None
-    for f in ('METADATA','PKG-INFO'):
-        try:
-            for ln in open(os.path.join(d, f), encoding='utf-8', errors='ignore'):
-                if ln.startswith('Version:'):
-                    ver = ln.split(':',1)[1].strip(); break
-        except Exception: pass
-    inst[n] = ver
 cli = {}
-for ep in glob.glob(os.path.join(sp, '*.dist-info', 'entry_points.txt')):
-    try:
-        c = configparser.ConfigParser(); c.read(ep)
-        if c.has_section('console_scripts'):
-            for name in c['console_scripts']:
-                cli[name] = os.path.basename(os.path.dirname(ep)).replace('.dist-info','')
-    except Exception: pass
+for dist in metadata.distributions():
+    raw_name = dist.metadata.get('Name') or dist.name
+    key = normalize(raw_name)
+    inst[key] = {'name': raw_name, 'version': dist.version}
+    for ep in dist.entry_points:
+        if ep.group == 'console_scripts':
+            cli.setdefault(key, []).append(ep.name)
 print(json.dumps({'installed': inst, 'cli': cli}))
 `], { timeout: 60000 });
   let envInfo = { installed: {}, cli: {} };
   try { envInfo = JSON.parse(probe.out || '{}'); } catch {}
 
-  const cliDists = new Set(Object.values(envInfo.cli || {}));
+  const cliDists = new Set(Object.keys(envInfo.cli || {}));
 
   // outdated（网络，较慢：逐包查版本；--fast 跳过）
   const index = FLAGS.pypiIndex || PYPI;
@@ -300,22 +293,24 @@ print(json.dumps({'installed': inst, 'cli': cli}))
   }
 
   const byName = {};
-  for (const o of outdated) byName[o.name] = { current: o.version, latest: o.latest_version };
+  for (const o of outdated) byName[normalizePackageName(o.name)] = { current: o.version, latest: o.latest_version };
 
   const tools = [];
   const deps = [];
   for (const name of Object.keys(envInfo.installed)) {
-    const cur = envInfo.installed[name];
+    const info = envInfo.installed[name] || {};
+    const cur = typeof info === 'string' ? info : info.version;
+    const displayName = typeof info === 'string' ? name : (info.name || name);
     const o = byName[name];
     if (!cliDists.has(name)) continue; // 只枚举提供 CLI 的包进"工具类"
     tools.push({
-      name,
+      name: displayName,
       current: cur,
       latest: o ? o.latest : null,
       outdated: !!o,
       major_jump: o ? (parseVersions(o.latest)[0] > parseVersions(cur)[0]) : false,
-      upgrade_cmd: o ? `pip3 install -U ${name} -i ${mirrorUsed}` : null,
-      bin: Object.keys(envInfo.cli).filter((k) => envInfo.cli[k] === name).join(','),
+      upgrade_cmd: o ? `pip3 install -U ${displayName} -i ${mirrorUsed}` : null,
+      bin: (envInfo.cli[name] || []).join(','),
     });
   }
   for (const name of Object.keys(byName)) {
@@ -495,9 +490,10 @@ function mdTable(rows) {
 function markdown() {
   const L = [];
   const now = new Date(report.generated_at).toLocaleString('zh-CN');
-  L.push(`# CLI 版本检查报告（${now}）`);
+  L.push(`# CLI 版本采集摘要（${now}）`);
   L.push('');
   L.push(`> 只读检查，未做任何升级。升级请逐项人工确认。`);
+  L.push(`> 配套 Agent Skill 会读取 \`--json\`，补充作用、耦合与风险后再生成七字段最终报告。`);
 
   const toolSections = [];
   const depSections = [];
@@ -588,7 +584,7 @@ function installCmd() {
   const src = path.join(__dirname, '..');
   const dst = path.join(to, 'cli-doctor');
   fs.mkdirSync(dst, { recursive: true });
-  const files = ['SKILL.md', path.join('bin', 'check.js')];
+  const files = ['SKILL.md', path.join('bin', 'check.js'), 'package.json'];
   for (const f of files) {
     const s = path.join(src, f), d = path.join(dst, f);
     if (!exists(s)) { console.error(`缺少文件: ${s}`); process.exit(1); }
