@@ -1,7 +1,7 @@
 {
   "$schema": "https://agent-plugins.org/schemas/1.0.0/plugin.schema.json",
   "name": "cli-doctor",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "在 Codex 侧栏诊断本机 CLI 工具版本与已安装包的依赖影响。",
   "license": "MIT",
   "homepage": "https://github.com/MaxHou-infinity/cli-doctor",

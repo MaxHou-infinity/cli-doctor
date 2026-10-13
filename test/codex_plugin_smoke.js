@@ -9,6 +9,10 @@ const { spawnSync } = require('node:child_process');
 
 const root = path.resolve(process.argv[2] || path.join(__dirname, '..'));
 const manifest = JSON.parse(fs.readFileSync(path.join(root, 'plugin.json'), 'utf8'));
+const cli = JSON.parse(fs.readFileSync(path.join(root, 'package.json'), 'utf8'));
+const skillVersion = fs.readFileSync(path.join(root, 'SKILL.md'), 'utf8').match(/^version: "([^"]+)"$/m)?.[1];
+assert.equal(manifest.version, cli.version, '插件与 CLI 版本必须一致');
+assert.equal(manifest.version, skillVersion, '插件与 Skill 版本必须一致');
 const mcp = JSON.parse(fs.readFileSync(path.join(root, 'mcp.json'), 'utf8'));
 const server = mcp.mcpServers?.['cli-doctor'];
 assert.equal(manifest.name, 'cli-doctor');

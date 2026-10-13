@@ -1,6 +1,6 @@
 ---
 name: cli-doctor
-version: "0.1.4"
+version: "0.2.0"
 display_name: CLI 工具版本体检
 display_name_en: CLI Doctor
 description_zh: >-

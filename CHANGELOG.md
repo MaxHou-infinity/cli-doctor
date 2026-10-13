@@ -1,8 +1,20 @@
-# CLI Doctor Codex 插件更新记录
+# CLI Doctor 更新记录
 
-插件版本以根目录 `plugin.json` 为准，与 CLI 的 `package.json` 版本分别管理。
+从 0.2.0 起，Agent Skill、CLI 和 Codex 侧栏插件采用同一版本号，分别记录在 `SKILL.md`、`package.json` 和 `plugin.json` 中。
+
+## 0.2.0
+
+- 新增 Codex 侧栏诊断页，按生态展示工具卡片和“一键诊断当前状态”按钮。
+- 区分“有可用更新”与“是否建议升级”，展示已安装包声明的直接、间接依赖与版本约束冲突。
+- 新增 Python 依赖约束检查；可选依赖启用状态和大版本兼容性无法确认时，明确要求核验。
+- 提供 Git marketplace 分发与 README 安装、更新共用提示词；安装副本不再依赖开发者电脑路径。
+- 统一 Skill、CLI、插件版本为 0.2.0，保留只读检查和手动决定升级的行为。
+
+依赖诊断不扫描其他项目目录、虚拟环境或 lockfile，也不验证运行时 API 兼容性。安装或更新插件后需重启 Codex；提示词更新按需执行，不提供后台更新通知。
 
 ## 0.1.0
+
+此项记录早期 Codex 插件的独立版本；当时 Skill 与 CLI 版本为 0.1.4。
 
 - 提供可从 Codex Git marketplace 安装的侧栏插件入口。
 - 在侧栏展示现有 CLI Doctor 生态卡片，并通过本地 MCP 运行只读诊断。

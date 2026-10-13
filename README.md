@@ -6,6 +6,8 @@
 
 `cli-doctor` 是一个 macOS-first 的 CLI 与开发环境版本体检工具：扫描 Homebrew、npm 全局包、Python/pip、Rust、Bun、uv 以及自更新工具，把“真正的工具”和“被工具带进来的依赖库”分开，并输出可供人阅读或 AI 解读的报告。
 
+当前版本 **v0.2.0**：Agent Skill、CLI 与 Codex 侧栏插件采用统一版本号。更新内容见 [CHANGELOG.md](CHANGELOG.md)。
+
 它只做一件重要的事：**先告诉你哪里可能需要升级、升级可能影响什么；不替你执行升级。**
 
 > WorkBuddy 兼容：`SKILL.md` frontmatter 同时提供版本号、中文/英文展示名和中文/英文描述，上传到 WorkBuddy 时可直接通过元数据校验。
