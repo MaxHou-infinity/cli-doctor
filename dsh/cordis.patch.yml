@@ -1,0 +1,13 @@
+# dsh-cli-doctor bundle patch.
+#
+# Inserts the CLI Doctor row into a DSH profile's layer stack. The row is a bare
+# plugin by package name: the host half (exports ".") runs in the Host process
+# and owns the read-only diagnosis route; the `dsh.client` declaration in
+# package.json makes the browser half (exports "./client", served at
+# /plugins/<id>/client.js) load in the Web GUI and register the left-sidebar
+# entry plus its main panel.
+#
+# Activate with: dsh plugin --profile <name> add <path-to-this-package>
+- insert:
+    - id: cli-doctor
+      name: dsh-cli-doctor

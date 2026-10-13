@@ -1,6 +1,6 @@
 # CLI Doctor 更新记录
 
-从 0.2.0 起，Agent Skill、CLI 和 Codex 侧栏插件采用同一版本号，分别记录在 `SKILL.md`、`package.json` 和 `plugin.json` 中。
+从 0.2.0 起，Agent Skill、CLI 和 Codex 侧栏插件采用同一版本号，分别记录在 `SKILL.md`、`package.json` 和 `plugin.json` 中。DSH 侧栏插件（`dsh/`）同样按 0.2.0 发布。
 
 ## 0.2.0
 
@@ -9,8 +9,13 @@
 - 新增 Python 依赖约束检查；可选依赖启用状态和大版本兼容性无法确认时，明确要求核验。
 - 提供 Git marketplace 分发与 README 安装、更新共用提示词；安装副本不再依赖开发者电脑路径。
 - 统一 Skill、CLI、插件版本为 0.2.0，保留只读检查和手动决定升级的行为。
+- 新增 DeepSeek Harness 左侧边栏插件 `dsh-cli-doctor`（`dsh/` 目录）：Host 半体注册只读诊断前缀路由
+  `/api/cli-doctor/*`，浏览器半体注册 `sidebar.panellist` 入口与主面板；提供一句话安装提示词。
+  它完全自包含于 `dsh/`，不修改 Codex 插件、MCP 入口和 `dashboard/` 的既有实现。
+- DSH 侧栏插件按**预构建**方式分发（`lib/client.js` 与 vendored `bin/` 随包发布），安装时不执行任何
+  构建脚本；新增 `npm run verify` 发布门禁（四处版本号联动检查 + 构建 + 单元测试 + `bin/` 副本 sha256 校验）。
 
-依赖诊断不扫描其他项目目录、虚拟环境或 lockfile，也不验证运行时 API 兼容性。安装或更新插件后需重启 Codex；提示词更新按需执行，不提供后台更新通知。
+依赖诊断不扫描其他项目目录、虚拟环境或 lockfile，也不验证运行时 API 兼容性。安装或更新 Codex 插件后需重启 Codex；DSH 插件同样不做热更新，升级需卸载后重装，`desktop` profile 安装后通常需要重启应用。提示词更新按需执行，不提供后台更新通知。
 
 ## 0.1.0
 

@@ -1,0 +1,8 @@
+# pnpm 11 会在首次安装时拦住依赖的构建脚本。esbuild 的 postinstall 只负责
+# 复制平台二进制，本包的构建不需要它（实测 esbuild JS API 直接可用），
+# 因此显式拒绝该脚本，避免每次安装都出现交互式批准提示。
+allowBuilds:
+  esbuild: false
+# store 固定在工作区内，避免写入用户级目录（原先放在 .npmrc，npm 会对
+# 这个 pnpm 专属键报 unknown project config，故移到 pnpm 自己的配置文件）。
+storeDir: ../.pnpm-store

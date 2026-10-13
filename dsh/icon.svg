@@ -1,0 +1,8 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" role="img" aria-label="CLI Doctor">
+  <!-- Single-colour mark: a terminal window with a prompt, in the plugin brand colour. -->
+  <g fill="none" stroke="#087C9F" stroke-width="4.5" stroke-linecap="round" stroke-linejoin="round">
+    <rect x="5" y="9" width="54" height="46" rx="9" />
+    <path d="M18 25l8 7-8 7" />
+    <path d="M32 39h13" />
+  </g>
+</svg>

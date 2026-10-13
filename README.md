@@ -43,6 +43,27 @@
 
 首次安装或更新后，重启 Codex，再从左侧栏打开 **CLI Doctor**。点击 **一键诊断当前状态** 才会运行本机检查；安装过程本身不会诊断或升级你的工具。运行环境需要 Node.js 18+、Git，以及支持插件 marketplace 的 Codex 桌面版。Codex 可能要求你批准联网或全局插件配置写入。这个提示词提供按需更新；如果你不再次使用它，当前版本不会因此自动升级或主动通知你。
 
+## DSH 侧栏：复制提示词安装或更新
+
+同一份只读诊断能力也提供 DeepSeek Harness（DSH）的左侧边栏插件，包名 `dsh-cli-doctor`，源码与工程契约在 [dsh/](dsh/README.md)。它与上面的 Codex 插件是两种独立安装方式，互不影响：DSH 侧完全自包含在 `dsh/` 内，不改动 `plugin.json`、`mcp.json`、`codex-server.js`、`dashboard/` 等 Codex 适配文件。
+
+把下面整段提示词粘贴到 **DSH 任意对话**，Agent 会用 `plugin_manager` 安装并核对；安装需要写入 profile 目录，因此会请求一次批准。
+
+```text
+请在这台电脑上安装或更新 DeepSeek Harness 的 CLI Doctor 左侧边栏插件。唯一可信来源是 npm 包
+dsh-cli-doctor（源码与工程契约在 https://github.com/MaxHou-infinity/cli-doctor 的 dsh/ 目录）。
+我要的是 DSH 侧边栏插件，不是同仓库的 Codex 插件，也不是 Agent Skill。
+
+请按顺序执行并报告每一步结果：
+1. 先用 plugin_manager 的 list_bundles 确认当前 profile 与是否已安装 dsh-cli-doctor；用 list_plugins 核对是否已启用、fiber 阶段是否为 active。
+2. 未安装时用 install_bundle 安装；已安装且来源正确时先 remove_bundle 再安装（DSH 插件不自动更新）。安装需要写入 profile 目录，请让我批准。不要手工改写 profile 的 cordis.patch.yml。
+3. 安装后核对 list_bundles：该 bundle 的 enabled 为真、rows 含 cli-doctor 行、error 为空。若返回 incompatible-version，不要用 set_version_exemption 放行，先把 peers 与运行时版本告诉我。
+4. 若返回 restart-required（或该 profile 未启用热重载），告诉我需要重启 DSH；重启后从左侧栏 CLI Doctor 入口打开面板，点「一键诊断当前状态」。
+5. 报告实际安装版本、是否启用、是否需要重启，以及后续如何更新。不要升级我电脑上的 Homebrew、npm、Python 或其他被诊断工具，不要运行 curl | sh。任何命令失败就停下并报告具体原因。
+```
+
+也可以不走 Agent：在左侧栏 **Plugins → Add plugin** 里填 `dsh-cli-doctor`（本地开发可直接填 `dsh/` 的绝对路径），或用 `dsh plugin --profile <profile> add dsh-cli-doctor`。npm 包是预构建发布的，安装时不跑任何构建脚本。DSH 侧栏插件不做热更新，升级需要卸载后重装；`desktop` profile 由桌面应用持有，安装后通常需要重启应用。诊断面板同样只读：点「一键诊断当前状态」才会运行 `bin/check.js --json --no-update`，不会执行任何升级。
+
 ## 30 秒安装 Agent Skill
 
 使用开放的 `skills` CLI。它会自动发现仓库中的 `cli-doctor`，并安装到对应 Agent 的正确目录，无需手动填写 Claude、Codex 或其他 Agent 的本地路径：

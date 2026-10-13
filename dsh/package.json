@@ -1,0 +1,66 @@
+{
+  "name": "dsh-cli-doctor",
+  "version": "0.2.0",
+  "description": "CLI Doctor sidebar plugin for DeepSeek Harness: read-only audit of local CLI tool versions and dependency impact, right in the left sidebar.",
+  "license": "MIT",
+  "homepage": "https://github.com/MaxHou-infinity/cli-doctor",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/MaxHou-infinity/cli-doctor.git",
+    "directory": "dsh"
+  },
+  "type": "module",
+  "main": "src/host/index.js",
+  "exports": {
+    ".": "./src/host/index.js",
+    "./client": "./lib/client.js",
+    "./cordis.patch.yml": "./cordis.patch.yml",
+    "./package.json": "./package.json"
+  },
+  "files": [
+    "lib",
+    "src/host",
+    "bin",
+    "cordis.patch.yml",
+    "icon.svg",
+    "README.md"
+  ],
+  "dsh": {
+    "engines": {
+      "dsh": ">=0.2.0-rc.2"
+    },
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    },
+    "client": {
+      "platform": "web",
+      "inject": [
+        "@deepseek-ai/dsh-client-ui-slots"
+      ]
+    }
+  },
+  "scripts": {
+    "check:versions": "node scripts/check-versions.mjs",
+    "sync:shared": "node scripts/sync-shared.mjs",
+    "build:client": "node scripts/build-client.mjs",
+    "build": "npm run sync:shared && npm run build:client",
+    "test": "node --test test/",
+    "verify": "npm run check:versions && npm run build && npm test"
+  },
+  "keywords": [
+    "dsh-plugin",
+    "deepseek-harness",
+    "cli-doctor",
+    "cli-health",
+    "dependency-audit",
+    "homebrew",
+    "npm-global",
+    "pip"
+  ],
+  "devDependencies": {
+    "esbuild": "^0.25.0",
+    "jsdom": "^26.0.0",
+    "react": "^18.3.1",
+    "react-dom": "^18.3.1"
+  }
+}

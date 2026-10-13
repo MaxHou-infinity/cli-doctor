@@ -6,3 +6,11 @@ __pycache__/
 /tmp/
 # 本机早期侧栏试验目录，不属于可分发插件。
 /plugins/cli-doctor-entry-probe/
+
+# DSH 侧栏插件（dsh/）的本地开发产物
+/dsh/node_modules/
+/.pnpm-store/
+# DSH 端到端验证用的临时 DSH_HOME，绝不指向用户真实 profile
+/.dsh-test/
+/.probe/
+/.dsh-lead/
