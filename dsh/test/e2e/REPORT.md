@@ -2,7 +2,8 @@
 
 - 验证对象：`dsh/`（Host 半体、Client 半体、构建脚本、vendored `bin/**`）
 - 运行环境：macOS，Node v26.8.1，真实 CLI `dsh 0.2.0-rc.2`（`/opt/homebrew/bin/dsh`）
-- 隔离环境：`DSH_HOME=/Users/maxhou/Desktop/cli-doctor/.dsh-test`（工作区内，gitignore）
+- 记录中的本机仓库路径已脱敏为 `<repo>`，其余输出与命令保持原样
+- 隔离环境：`DSH_HOME=<repo>/.dsh-test`（工作区内，gitignore）
   - **全程未写 `~/.dsh`**：脚本会忽略从 shell 继承的 `DSH_HOME`，并对 `E2E_DSH_HOME` 做「必须在仓库内」的硬围栏
 - 一键复跑：`bash dsh/test/e2e/run-all.sh --port 19390`
 - 第一轮全量（2026-10-13 16:08–16:12）：**8/8 阶段通过**
@@ -176,9 +177,9 @@ Chrome:   --headless=new --no-sandbox --disable-dev-shm-usage --user-data-dir=/t
 
 ```
 $ DSH_HOME=<repo>/.dsh-test dsh --profile scratch --from-default-profile web --dump-config   # 先用 web 模板建 profile
-$ DSH_HOME=<repo>/.dsh-test dsh plugin --profile scratch add /Users/maxhou/Desktop/cli-doctor/dsh
+$ DSH_HOME=<repo>/.dsh-test dsh plugin --profile scratch add <repo>/dsh
 plugin add exit=0
-dependencies: + dsh-cli-doctor link:/Users/maxhou/Desktop/cli-doctor/dsh
+dependencies: + dsh-cli-doctor link:<repo>/dsh
 ```
 - 说明：`dsh plugin add` 新建的 profile 只带 `@deepseek-ai/dsh-base`，没有 web 面，
   `dsh --profile <name> web` 这种写法在新版 dsh 上也会因多余 app 参数直接报错；
@@ -296,12 +297,12 @@ $ curl -b cookies.txt "<该 combo URL>" -> 200  10459607 bytes
 - **实际（修复前）**：`500 {"ok":false,"error":"exit-1"}`，耗时 0s
 - **复现（脱离插件）**：
   ```
-  $ cd /Users/maxhou/Desktop/cli-doctor && node dsh/bin/check.js --json --no-update
-  file:///Users/maxhou/Desktop/cli-doctor/dsh/bin/check.js:16
+  $ cd <repo> && node dsh/bin/check.js --json --no-update
+  file://<repo>/dsh/bin/check.js:16
   const { spawnSync } = require('child_process');
   ReferenceError: require is not defined in ES module scope
   This file is being treated as an ES module because it has a '.js' file extension and
-  '/Users/maxhou/Desktop/cli-doctor/dsh/package.json' contains "type": "module".
+  '<repo>/dsh/package.json' contains "type": "module".
   → exit 1
   ```
   服务端日志同一根因：`[cli-doctor] diagnosis failed (exit-1): ... ReferenceError: require is not defined in ES module scope`
@@ -349,8 +350,8 @@ verifier 的未验证项 2 与 4 由 Lead 在本机真实 `desktop` profile 上�
 
 | 检查 | 命令 / 手段 | 结果 |
 |---|---|---|
-| 安装 | `plugin_manager install_bundle` target=`/Users/maxhou/Desktop/cli-doctor/dsh` | `application: "applied"`、`enabled: true`、`bundle: dsh-cli-doctor`、`warnings: []`（**无需重启**，热应用） |
-| profile 状态 | `cat ~/.dsh/profiles/desktop/package.json` | 依赖 `dsh-cli-doctor: link:/Users/maxhou/Desktop/cli-doctor/dsh`；bundles 末尾追加 `dsh-cli-doctor` |
+| 安装 | `plugin_manager install_bundle` target=`<repo>/dsh` | `application: "applied"`、`enabled: true`、`bundle: dsh-cli-doctor`、`warnings: []`（**无需重启**，热应用） |
+| profile 状态 | `cat ~/.dsh/profiles/desktop/package.json` | 依赖 `dsh-cli-doctor: link:<repo>/dsh`；bundles 末尾追加 `dsh-cli-doctor` |
 | 侧栏入口真的注册进运行中的界面 | `cordis_inspect_query` client/Slots `sidebar.panellist` | occupants 新增 `{id: "cli-doctor", order: 30, active: true}`（与 `plugins`、`schedules` 并列） |
 | Host 半体在真实会话中可用 | `curl -H 'sec-fetch-site: same-origin' http://127.0.0.1:19387/api/cli-doctor/health` | `200 {"ok":true,"version":"0.2.0","busy":false}` |
 | 围栏在真实会话中生效 | 同上但不带标记 | `403` |
