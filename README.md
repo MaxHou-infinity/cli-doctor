@@ -22,6 +22,25 @@
 - CLI 可输出 Markdown 采集摘要；配套 Agent Skill 使用 `--json` 生成包含作用、耦合和风险的七字段决策报告
 - 支持升级后复跑，核对哪些项目已经到位、哪些是刻意保留的版本
 
+## Codex 侧栏：复制提示词安装或更新
+
+在 **Codex 桌面版**任意对话中粘贴下面整段提示词。首次使用时，它会让 Codex 从本仓库注册 marketplace 并安装侧栏插件；以后粘贴同一段提示词，可刷新来源并安装新版本。这个插件与下文的 Agent Skill 是两种独立安装方式。
+
+```text
+请在这台电脑上安装或更新 Codex 桌面版的 CLI Doctor 侧栏插件。唯一可信来源是 https://github.com/MaxHou-infinity/cli-doctor；目标插件 ID 是 cli-doctor@cli-doctor-github。我要的是侧栏插件，不是同仓库的 Agent Skill。
+
+请按顺序执行并报告每一步结果：
+1. 先确认 codex CLI、Git 和 Node.js 18+ 可用。读取该仓库当前的 .agents/plugins/marketplace.json、plugin.json 和 mcp.json，核对插件名称、版本及本地 MCP 入口；不要执行仓库中与安装无关的命令。
+2. 用 codex plugin marketplace list --json 检查是否已注册来自 MaxHou-infinity/cli-doctor 的 cli-doctor-github。未注册就运行 codex plugin marketplace add MaxHou-infinity/cli-doctor；已注册且来源正确就运行 codex plugin marketplace upgrade cli-doctor-github。若同名 marketplace 指向其他来源，停止并解释，不要覆盖。
+3. 从 codex plugin marketplace list --json 返回的 cli-doctor-github `root` 读取 plugin.json 版本，用 codex plugin list --json 读取当前已安装版本。仅在未安装或来源版本更新时运行 codex plugin add cli-doctor@cli-doctor-github --json；不要降级。注意 marketplace upgrade 只是刷新来源，不能把它当成插件已升级的证据。
+4. 用 codex plugin list --json 核对插件已安装、已启用及版本。安装或更新时从 codex plugin add --json 的 installedPath 找到安装副本；无需更新时按 Codex 插件缓存位置定位。检查副本包含 bin/check.js、bin/python_dependency_audit.py、dashboard 页面和 codex-server.js。如果包内有 test/codex_plugin_smoke.js，运行这个无需诊断和联网的 MCP 页面自检。
+5. 如果本次安装了新版本，读取仓库的 CHANGELOG.md，简述这次插件更新内容。告诉我安装或更新是否完成、实际安装的插件版本、是否需要重启 Codex，以及重启后如何从左侧 CLI Doctor 入口打开页面并点击“一键诊断当前状态”。如果你无法亲眼确认我的侧栏已出现，请明确说明这一步还需我在重启后核对，不能声称已完成界面验证。
+
+不要升级我电脑上的 Homebrew、npm、Python 或其他被诊断工具；不要运行 curl | sh，也不要清理或覆盖其他插件配置。任何命令失败时停止并报告具体原因，不要以猜测代替验证。
+```
+
+首次安装或更新后，重启 Codex，再从左侧栏打开 **CLI Doctor**。点击 **一键诊断当前状态** 才会运行本机检查；安装过程本身不会诊断或升级你的工具。运行环境需要 Node.js 18+、Git，以及支持插件 marketplace 的 Codex 桌面版。Codex 可能要求你批准联网或全局插件配置写入。这个提示词提供按需更新；如果你不再次使用它，当前版本不会因此自动升级或主动通知你。
+
 ## 30 秒安装 Agent Skill
 
 使用开放的 `skills` CLI。它会自动发现仓库中的 `cli-doctor`，并安装到对应 Agent 的正确目录，无需手动填写 Claude、Codex 或其他 Agent 的本地路径：
@@ -144,6 +163,14 @@ npm test
 ```
 
 运行环境：Node.js 18+。项目无第三方运行时依赖。
+
+### 本地诊断页与 Codex 插件
+
+在仓库目录运行 `npm run dashboard`，打开终端打印的 `http://127.0.0.1:<端口>/`。点击“一键诊断当前状态”后，页面按生态展示工具卡片；检查调用 `bin/check.js --json --no-update`，不会执行升级，也不会主动运行 `brew update`。完整联网查询可能持续数分钟；没有可靠目标版本的项目会标为“待核验”。
+
+页面把“有可用更新”和“建议更新”分开。依赖影响按已安装 Homebrew formula、npm 全局顶层包，以及当前 `python3` 解释器中的发行包元数据检查；Python 会比对目标版本与已安装项目声明的版本约束，并列出直接与间接依赖。发现约束冲突时标记“暂不建议”，检查范围内未发现其他已装项目依赖或约束冲突、且不是大版本变化时才标记“建议更新”。这些判断不扫描其他项目目录、虚拟环境或 lockfile，也不验证目标版新增依赖和运行时 API 兼容性；大版本会要求兼容验证。
+
+仓库根目录的 `plugin.json`、`mcp.json` 和 `codex-server.js` 是可分发的 Codex 插件入口。插件中的“一键诊断”通过 MCP 调用同一份 `bin/check.js --json --no-update`，与独立诊断页共用卡片和建议逻辑。插件从已安装副本读取资源，不依赖开发者电脑上的仓库路径。每次发布插件更新时必须递增 `plugin.json` 的版本号、更新 `CHANGELOG.md`，并重新执行安装与页面自检；现有 `plugins/cli-doctor-entry-probe` 目录仅保留作早期本机试验记录，不用于分发。
 
 ## 关键词
 

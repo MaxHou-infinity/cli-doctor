@@ -47,6 +47,8 @@
     "uv"
   ],
   "scripts": {
-    "test": "node bin/check.js --no-update --fast"
+    "test": "node bin/check.js --no-update --fast",
+    "test:codex": "node test/codex_plugin_smoke.js",
+    "dashboard": "node dashboard/server.js"
   }
 }

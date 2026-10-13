@@ -24,6 +24,7 @@ function sh(cmd, args = [], opts = {}) {
   const r = spawnSync(cmd, args, {
     encoding: 'utf8',
     timeout: opts.timeout || 30000,
+    input: opts.input,
     env: { ...process.env, ...(opts.env || {}) },
     maxBuffer: 64 * 1024 * 1024,
   });
@@ -67,6 +68,47 @@ function gtVer(a, b) {
 }
 function normalizePackageName(name) {
   return String(name || '').trim().toLowerCase().replace(/[-_.]+/g, '-');
+}
+
+function directDependents(graph, name) {
+  return [...(graph.get(normalizePackageName(name)) || [])].sort((a, b) => a.localeCompare(b));
+}
+
+function indirectDependents(graph, name) {
+  const root = normalizePackageName(name);
+  const direct = new Set(directDependents(graph, name).map(normalizePackageName));
+  const seen = new Set([root, ...direct]);
+  const queue = [...direct];
+  const indirect = new Set();
+  while (queue.length) {
+    const current = queue.shift();
+    for (const dependent of graph.get(current) || []) {
+      const key = normalizePackageName(dependent);
+      if (seen.has(key)) continue;
+      seen.add(key);
+      indirect.add(dependent);
+      queue.push(key);
+    }
+  }
+  return [...indirect].sort((a, b) => a.localeCompare(b));
+}
+
+function addDependency(graph, dependency, dependent) {
+  const key = normalizePackageName(dependency);
+  if (!key) return;
+  if (!graph.has(key)) graph.set(key, new Set());
+  graph.get(key).add(dependent);
+}
+
+function setImpact(tool, dependents, evidence, checked, extra = {}) {
+  tool.impact = {
+    checked,
+    scope: evidence,
+    dependents: dependents.map((name) => ({ name })),
+    conflicts: [],
+    uncertain: [],
+    ...extra,
+  };
 }
 
 /* ---------------------------------- 常量配置 ---------------------------------- */
@@ -141,7 +183,9 @@ function collectHomebrew() {
   const leaves = new Set(leavesRaw.split('\n').filter(Boolean).map((s) => s.trim()));
 
   // name (cur) < latest  或  name cur < latest
-  const outdatedRaw = shOut('brew', ['outdated', '--verbose'], { timeout: 60000 });
+  const outdatedResult = sh('brew', ['outdated', '--verbose'], { timeout: 60000 });
+  const latestChecked = outdatedResult.code === 0;
+  const outdatedRaw = latestChecked ? outdatedResult.out : '';
   const outdated = {}; // name -> {current, latest}
   for (const line of outdatedRaw.split('\n')) {
     let m = line.match(/^(\S+)\s+\(([^)]+)\)\s*<\s*(.+)$/) || line.match(/^(\S+)\s+([^\s<]+)\s*<\s*(.+)$/);
@@ -159,8 +203,8 @@ function collectHomebrew() {
     const o = outdated[name];
     tools.push({
       name, current: o ? o.current : (versions[name] || '未知'),
-      latest: o ? o.latest : null,
-      outdated: !!o,
+      latest: o ? o.latest : (latestChecked ? (versions[name] || null) : null),
+      outdated: o ? true : (latestChecked ? false : null),
       upgrade_cmd: o ? `brew upgrade ${name}` : null,
     });
   }
@@ -170,13 +214,37 @@ function collectHomebrew() {
     const o = outdated[name];
     deps.push({ name, current: o.current, latest: o.latest, upgrade_cmd: `brew upgrade ${name}`, note: '由工具类包拖入的依赖库，通常随 brew upgrade 连带升级' });
   }
+  const infoResult = sh('brew', ['info', '--json=v2', '--installed'], { timeout: 60000 });
+  const reverse = new Map();
+  const serviceFormulas = new Set();
+  let dependencyChecked = false;
+  if (infoResult.code === 0) {
+    try {
+      const info = JSON.parse(infoResult.out);
+      for (const formula of info.formulae || []) {
+        for (const dependency of formula.dependencies || []) addDependency(reverse, dependency, formula.name);
+        if (formula.service) serviceFormulas.add(normalizePackageName(formula.name));
+      }
+      dependencyChecked = Array.isArray(info.formulae);
+    } catch {}
+  }
+  for (const tool of [...tools, ...deps]) {
+    setImpact(tool, directDependents(reverse, tool.name), '已安装 Homebrew formula 的声明依赖', dependencyChecked,
+      {
+        indirect: indirectDependents(reverse, tool.name).map((name) => ({ name })),
+        operational_review: serviceFormulas.has(normalizePackageName(tool.name))
+          ? '此 formula 提供后台服务；项目连接、数据目录及重启影响未通过依赖声明覆盖。' : null,
+      });
+  }
   report.managers.homebrew = {
     tools: tools.sort((a, b) => (b.outdated - a.outdated) || a.name.localeCompare(b.name)),
     deps,
     tool_count: tools.length,
     dep_count: deps.length,
-    outdated_tool_count: tools.filter((t) => t.outdated).length,
+    outdated_tool_count: tools.filter((t) => t.outdated === true && !t.version_line_anomaly).length,
     outdated_dep_count: deps.length,
+    latest_checked: latestChecked,
+    dependency_checked: dependencyChecked,
     upgrade_all_cmd: 'brew upgrade',
     note: '依赖库无需单独升，brew upgrade 会自动连带。升级后如 postgresql 等服务在跑，需 brew services restart 对应项。',
   };
@@ -189,42 +257,70 @@ function collectNpm() {
   const root = shOut('npm', ['root', '-g'], { timeout: 10000 }); // 如 /opt/homebrew/lib/node_modules
   if (!root) { report.skipped.push('npm: 无法取得 global root'); return; }
   const tools = [];
+  const reverse = new Map();
+  let dependencyChecked = true;
   const lsRaw = shOut('npm', ['ls', '-g', '--depth=0', '--json=true'], { timeout: 30000 });
   let installed = {};
   try { installed = (JSON.parse(lsRaw).dependencies) || {}; } catch {}
 
   let outdatedRaw = '';
+  let latestChecked = false;
+  let outdatedCode = null;
   if (!FLAGS.fast) {
     const r = sh('npm', ['outdated', '-g', '--json=true'], { timeout: 60000 });
     outdatedRaw = r.out; // npm outdated 退出码为 1 表示"有可升级"，stdout 仍有 JSON
+    outdatedCode = r.code;
+    latestChecked = r.code === 0 && !outdatedRaw;
   }
   let outdated = {};
-  try { outdated = JSON.parse(outdatedRaw) || {}; } catch {}
+  if (outdatedRaw && (outdatedCode === 0 || outdatedCode === 1)) {
+    try {
+      outdated = JSON.parse(outdatedRaw) || {};
+      latestChecked = true;
+    } catch { latestChecked = false; }
+  }
 
   for (const name of Object.keys(installed)) {
     let ver = null;
     try {
       const pj = JSON.parse(fs.readFileSync(path.join(root, name, 'package.json'), 'utf8'));
       ver = pj.version;
-    } catch {}
+      for (const dependency of Object.keys({ ...pj.dependencies, ...pj.peerDependencies, ...pj.optionalDependencies })) {
+        addDependency(reverse, dependency, name);
+      }
+    } catch { dependencyChecked = false; }
     if (!ver) continue;
     const o = outdated[name];
+    const versionLineAnomaly = !!o && parseVersions(o.latest)[0] < parseVersions(ver)[0];
     tools.push({
       name,
       current: ver,
-      latest: o ? o.latest : null,
-      outdated: !!o,
+      latest: o ? o.latest : (latestChecked ? ver : null),
+      outdated: o ? true : (latestChecked ? false : null),
       major_jump: o ? (parseVersions(o.latest)[0] > parseVersions(ver)[0]) : false,
-      upgrade_cmd: o ? `npm i -g ${name}@latest` : null,
+      version_line_anomaly: versionLineAnomaly,
+      upgrade_cmd: o && !versionLineAnomaly ? `npm i -g ${name}@latest` : null,
+      note: versionLineAnomaly ? 'latest 标签的主版本号低于已装版本；先核对发布频道，不建议直接升级' : null,
     });
+  }
+  if (!lsRaw) dependencyChecked = false;
+  for (const tool of tools) {
+    setImpact(tool, directDependents(reverse, tool.name), 'npm 全局顶层包的 package.json 声明依赖', dependencyChecked,
+      {
+        indirect: indirectDependents(reverse, tool.name).map((name) => ({ name })),
+        operational_review: ['npm', 'pnpm', 'yarn', 'corepack'].includes(tool.name)
+          ? '这是项目包管理器；本次未读取各项目的 packageManager 字段及锁文件。' : null,
+      });
+    if (tool.impact.dependents.length) tool.impact.uncertain = tool.impact.dependents.map((item) => ({ name: item.name, reason: '未模拟目标版本与 npm semver 约束及运行时 API 兼容性' }));
   }
   tools.sort((a, b) => (b.outdated - a.outdated) || a.name.localeCompare(b.name));
   report.managers.npm_global = {
     tools,
     deps: [],
     tool_count: tools.length,
-    outdated_tool_count: tools.filter((t) => t.outdated).length,
-    latest_checked: !FLAGS.fast,
+    outdated_tool_count: tools.filter((t) => t.outdated === true && !t.version_line_anomaly).length,
+    latest_checked: latestChecked,
+    dependency_checked: dependencyChecked,
     upgrade_all_cmd: 'npm i -g <需要升级的包>@latest（逐个）',
     note: 'npm 12+ 默认拦截 install 脚本；如升级后工具报错，按提示运行 npm i -g --allow-scripts=<pkg>。正在运行的 CLI（如 dsh 自身）建议避开运行期升级。',
   };
@@ -272,6 +368,7 @@ print(json.dumps({'installed': inst, 'cli': cli}))
   // outdated（网络，较慢：逐包查版本；--fast 跳过）
   const index = FLAGS.pypiIndex || PYPI;
   let outdated = [];
+  let latestChecked = false;
   let mirrorUsed = index;
   if (FLAGS.fast) {
     mirrorUsed = '未检查(--fast，需联网核对)';
@@ -288,7 +385,8 @@ print(json.dumps({'installed': inst, 'cli': cli}))
       mirrorUsed = TUNA_PYPI;
       outdated = runOutdated(TUNA_PYPI);
     }
-    if (!outdated) outdated = [];
+    latestChecked = Array.isArray(outdated);
+    if (!latestChecked) outdated = [];
   }
 
   const byName = {};
@@ -302,13 +400,16 @@ print(json.dumps({'installed': inst, 'cli': cli}))
     const displayName = typeof info === 'string' ? name : (info.name || name);
     const o = byName[name];
     if (!cliDists.has(name)) continue; // 只枚举提供 CLI 的包进"工具类"
+    const versionLineAnomaly = !!o && parseVersions(o.latest)[0] < parseVersions(cur)[0];
     tools.push({
       name: displayName,
       current: cur,
-      latest: o ? o.latest : null,
-      outdated: !!o,
+      latest: o ? o.latest : (latestChecked ? cur : null),
+      outdated: o ? true : (latestChecked ? false : null),
       major_jump: o ? (parseVersions(o.latest)[0] > parseVersions(cur)[0]) : false,
-      upgrade_cmd: o ? `pip3 install -U ${displayName} -i ${mirrorUsed}` : null,
+      version_line_anomaly: versionLineAnomaly,
+      upgrade_cmd: o && !versionLineAnomaly ? `pip3 install -U ${displayName} -i ${mirrorUsed}` : null,
+      note: versionLineAnomaly ? '镜像候选主版本号低于已装版本；先核对项目版本线' : null,
       bin: (envInfo.cli[name] || []).join(','),
     });
   }
@@ -321,16 +422,42 @@ print(json.dumps({'installed': inst, 'cli': cli}))
       note: '库依赖；升级前注意其使用方(Requires-Dist)的版本锁定，避免"升 A 拆 B"',
     });
   }
+  const targets = Object.fromEntries([...tools, ...deps]
+    .filter((item) => item.latest || item.current)
+    .map((item) => [normalizePackageName(item.name), item.latest || item.current]));
+  const auditResult = sh(py, [path.join(__dirname, 'python_dependency_audit.py')], {
+    input: JSON.stringify(targets), timeout: 60000,
+  });
+  let impactByName = {};
+  let dependencyChecked = false;
+  if (auditResult.code === 0) {
+    try {
+      impactByName = JSON.parse(auditResult.out);
+      dependencyChecked = true;
+    } catch {}
+  }
+  for (const tool of [...tools, ...deps]) {
+    const found = impactByName[normalizePackageName(tool.name)] || {};
+    tool.impact = {
+      checked: dependencyChecked && !!impactByName[normalizePackageName(tool.name)],
+      scope: `当前 Python 解释器 ${py} 中已安装发行包的声明依赖`,
+      dependents: found.dependents || [],
+      indirect: found.indirect || [],
+      conflicts: found.conflicts || [],
+      uncertain: found.uncertain || [],
+    };
+  }
   tools.sort((a, b) => (b.outdated - a.outdated) || a.name.localeCompare(b.name));
   report.managers.python_pip = {
     python: py,
     mirror_used: mirrorUsed,
-    latest_checked: !FLAGS.fast,
+    latest_checked: latestChecked,
+    dependency_checked: dependencyChecked,
     tools,
     deps: deps.sort((a, b) => a.name.localeCompare(b.name)),
     tool_count: tools.length,
     dep_total_installed: Object.keys(envInfo.installed).length,
-    outdated_tool_count: tools.filter((t) => t.outdated).length,
+    outdated_tool_count: tools.filter((t) => t.outdated === true && !t.version_line_anomaly).length,
     outdated_dep_count: deps.length,
     note: '分类依据: 提供 console_scripts 的包=工具类；其余=依赖类。锁链风险高（如 markitdown→magika、sympy→mpmath、openapi→jsonschema-path），勿无脑全升。',
   };
@@ -481,7 +608,9 @@ function mdTable(rows) {
   const heads = ['工具/包', '当前', '最新', '升级命令', '备注'];
   const lines = [['| ' + heads.join(' | ') + ' |', '|---|---|---|---|---|']];
   for (const r of rows) {
-    lines.push(['| ' + [r.name, fmtVer(r.current), fmtVer(r.latest), esc(r.upgrade_cmd || '—'), esc(r.note || r.bin || '')].join(' | ') + ' |']);
+    const conflicts = r.impact?.conflicts || [];
+    const warning = conflicts.length ? `暂不建议：目标版本与 ${conflicts.map((item) => item.name).join('、')} 的版本约束冲突。` : '';
+    lines.push(['| ' + [r.name, fmtVer(r.current), fmtVer(r.latest), esc(conflicts.length ? '—' : (r.upgrade_cmd || '—')), esc(warning + (r.note || r.bin || ''))].join(' | ') + ' |']);
   }
   return lines.map((l) => l.join('\n')).join('\n');
 }
@@ -505,25 +634,30 @@ function markdown() {
   const mSelf = report.managers.self_updating;
 
   if (mHomebrew) {
-    const upd = mHomebrew.tools.filter((t) => t.outdated);
-    const ok = mHomebrew.tools.filter((t) => !t.outdated);
+    const upd = mHomebrew.tools.filter((t) => t.outdated === true);
+    const ok = mHomebrew.tools.filter((t) => t.outdated === false);
+    const unk = mHomebrew.tools.filter((t) => t.outdated === null);
     let s = '### Homebrew（工具 ' + mHomebrew.tool_count + ' 个';
-    s += upd.length ? '，**' + upd.length + ' 个可升级**）' : '，全部最新 ✅）';
-    toolSections.push([s, mdTable(upd), ok.length ? '已最新：' + ok.map((t) => t.name).join('、') : '']);
+    s += upd.length ? '，**' + upd.length + ' 个可升级**）' : (unk.length ? '，版本待核验）' : '，全部最新 ✅）');
+    toolSections.push([s, mdTable(upd), [ok.length ? '已核验无更新：' + ok.map((t) => t.name).join('、') : '', unk.length ? '待核验：' + unk.map((t) => t.name).join('、') : ''].filter(Boolean).join('\n')]);
   }
   if (mNpm) {
-    const upd = mNpm.tools.filter((t) => t.outdated);
-    const ok = mNpm.tools.filter((t) => !t.outdated);
+    const upd = mNpm.tools.filter((t) => t.outdated === true && !t.version_line_anomaly);
+    const ok = mNpm.tools.filter((t) => t.outdated === false);
+    const unk = mNpm.tools.filter((t) => t.outdated === null);
+    const anomaly = mNpm.tools.filter((t) => t.version_line_anomaly);
     let s = `### npm 全局（工具 ${mNpm.tool_count} 个`;
-    s += upd.length ? `，**${upd.length} 个可升级**）` : (mNpm.latest_checked === false ? '，未联网核对）' : '，全部最新 ✅）');
-    toolSections.push([s, mdTable(upd.map((t) => ({ ...t, note: t.major_jump ? '⚠️ 大版本跳跃' : (t.note || '') }))), ok.length ? (mNpm.latest_checked === false ? `已安装（未核对最新版本）：${ok.map((t) => t.name).join('、')}` : `已最新：${ok.map((t) => t.name).join('、')}`) : '']);
+    s += upd.length ? `，**${upd.length} 个可升级**）` : (unk.length || anomaly.length || !mNpm.latest_checked ? '，版本待核验）' : '，全部最新 ✅）');
+    toolSections.push([s, mdTable([...upd, ...anomaly].map((t) => ({ ...t, note: t.major_jump ? '⚠️ 大版本跳跃' : (t.note || '') }))), [ok.length ? `已核验无更新：${ok.map((t) => t.name).join('、')}` : '', unk.length ? `待核验：${unk.map((t) => t.name).join('、')}` : ''].filter(Boolean).join('\n')]);
   }
   if (mPip) {
-    const upd = mPip.tools.filter((t) => t.outdated);
-    const ok = mPip.tools.filter((t) => !t.outdated);
+    const upd = mPip.tools.filter((t) => t.outdated === true && !t.version_line_anomaly);
+    const ok = mPip.tools.filter((t) => t.outdated === false);
+    const unk = mPip.tools.filter((t) => t.outdated === null);
+    const anomaly = mPip.tools.filter((t) => t.version_line_anomaly);
     let s = `### Python/pip — ${mPip.python || 'python3'}（工具 ${mPip.tool_count} 个`;
-    s += upd.length ? `，**${upd.length} 个可升级**；镜像: ${mPip.mirror_used}）` : (mPip.latest_checked === false ? `，未联网核对；镜像: ${mPip.mirror_used}）` : `，全部最新 ✅；镜像: ${mPip.mirror_used}）`);
-    toolSections.push([s, mdTable(upd.map((t) => ({ ...t, note: (t.major_jump ? '⚠️ 大版本跳跃 ' : '') + '命令: ' + (t.bin || '') }))), ok.length ? (mPip.latest_checked === false ? `已安装（CLI 类，未核对最新版本）：${ok.map((t) => t.name).join('、')}` : `已最新（CLI 类）：${ok.map((t) => t.name).join('、')}`) : '']);
+    s += upd.length ? `，**${upd.length} 个可升级**；镜像: ${mPip.mirror_used}）` : (unk.length || anomaly.length || !mPip.latest_checked ? `，版本待核验；镜像: ${mPip.mirror_used}）` : `，全部最新 ✅；镜像: ${mPip.mirror_used}）`);
+    toolSections.push([s, mdTable([...upd, ...anomaly].map((t) => ({ ...t, note: t.version_line_anomaly ? t.note : (t.major_jump ? '⚠️ 大版本跳跃 ' : '') + '命令: ' + (t.bin || '') }))), [ok.length ? `已核验无更新（CLI 类）：${ok.map((t) => t.name).join('、')}` : '', unk.length ? `待核验（CLI 类）：${unk.map((t) => t.name).join('、')}` : ''].filter(Boolean).join('\n')]);
   }
   if (mRust) {
     const upd = mRust.tools.filter((t) => t.outdated);
@@ -581,7 +715,6 @@ function markdown() {
   } else {
     process.stdout.write(markdown() + `\n（耗时 ${(report.elapsed_ms / 1000).toFixed(1)}s）\n`);
   }
-  process.exit(0);
 })().catch((e) => {
   console.error('运行出错: ' + (e && e.stack || e));
   process.exit(1);

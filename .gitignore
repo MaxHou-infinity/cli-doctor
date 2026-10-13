@@ -1,4 +1,8 @@
 node_modules/
+__pycache__/
+*.pyc
 *.log
 .DS_Store
 /tmp/
+# 本机早期侧栏试验目录，不属于可分发插件。
+/plugins/cli-doctor-entry-probe/

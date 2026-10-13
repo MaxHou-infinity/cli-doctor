@@ -1,0 +1,45 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>CLI Doctor · 本机工具链体检</title>
+    <link rel="stylesheet" href="/app.css">
+    <script src="/app.js" defer></script>
+  </head>
+  <body>
+    <div class="shell">
+      <header class="topbar">
+        <div class="brand"><span class="brand-mark" aria-hidden="true">+</span><span>CLI Doctor</span></div>
+        <span class="topbar-note">本机工具链体检</span>
+      </header>
+      <main>
+        <section class="intro" aria-labelledby="page-title">
+          <div class="intro-copy">
+            <h1 id="page-title">看清状态，再决定升级。</h1>
+            <p>分别判断有无新版本、已安装项目的依赖影响，以及是否建议升级。诊断只生成建议，不执行升级。</p>
+            <div class="action-row">
+              <button id="check-button" type="button">一键诊断当前状态</button>
+              <span id="run-state" role="status" aria-live="polite">尚未检查</span>
+            </div>
+          </div>
+          <div class="scope-panel">
+            <span class="scope-title">本次检查范围</span>
+            <p>Homebrew formula / npm 全局 / 当前 Python 解释器 / Rust / Bun / uv / 独立更新工具</p>
+            <small>依赖关系按已安装包的声明核对；其他项目目录、虚拟环境及运行时兼容性未覆盖。Homebrew 索引不会在本页主动刷新。</small>
+          </div>
+        </section>
+        <section id="summary" class="summary" aria-label="检查摘要" hidden></section>
+        <div id="error" class="error" role="alert" hidden></div>
+        <div id="ecosystems" class="ecosystems">
+          <div class="empty-state">
+            <span class="empty-icon" aria-hidden="true">⌕</span>
+            <h2>等待第一次诊断</h2>
+            <p>点击上方按钮后，结果会按生态分组显示。每个工具都保留独立卡片。</p>
+          </div>
+        </div>
+      </main>
+      <footer>本地运行 · 只读检查 · 升级由你决定</footer>
+    </div>
+  </body>
+</html>
