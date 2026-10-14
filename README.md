@@ -1,10 +1,12 @@
 # cli-doctor
 
+**中文** | [English](README.en.md)
+
 ![cli-doctor hero](assets/cli-doctor-hero.png)
 
 在升级之前，先看清你的 CLI 环境。
 
-`cli-doctor` 是一个 macOS-first 的 CLI 与开发环境版本体检工具：扫描 Homebrew、npm 全局包、Python/pip、Rust、Bun、uv 以及自更新工具，把“真正的工具”和“被工具带进来的依赖库”分开，并输出可供人阅读或 AI 解读的报告。
+`cli-doctor` 是一个优先支持 macOS 的 CLI 与开发环境版本体检工具：扫描 Homebrew、npm 全局包、Python/pip、Rust、Bun、uv 以及自更新工具，把“真正的工具”和“被工具带进来的依赖库”分开，并输出可供人阅读或 AI 解读的报告。
 
 当前版本 **v0.2.0**：Agent Skill、CLI 与 Codex 侧栏插件采用统一版本号。更新内容见 [CHANGELOG.md](CHANGELOG.md)。
 
@@ -92,13 +94,6 @@ npx skills@latest add MaxHou-infinity/cli-doctor \
 帮我诊断命令行工具有没有过期
 看看 brew、npm、pip 有哪些需要更新
 检查开发环境里的工具和依赖版本
-
-Check the status of my installed CLI tools
-Audit my command-line tools for outdated versions
-Diagnose CLI dependency and upgrade risks
-
-CLIツールのバージョンと更新状況を確認して
-Revisar las versiones de mis herramientas CLI
 ```
 
 自然语言由各 Agent 进行语义匹配；需要确定调用时，可以使用显式名称：
@@ -193,12 +188,12 @@ npm test
 
 页面把“有可用更新”和“建议更新”分开。依赖影响按已安装 Homebrew formula、npm 全局顶层包，以及当前 `python3` 解释器中的发行包元数据检查；Python 会比对目标版本与已安装项目声明的版本约束，并列出直接与间接依赖。发现约束冲突时标记“暂不建议”，检查范围内未发现其他已装项目依赖或约束冲突、且不是大版本变化时才标记“建议更新”。这些判断不扫描其他项目目录、虚拟环境或 lockfile，也不验证目标版新增依赖和运行时 API 兼容性；大版本会要求兼容验证。
 
-仓库根目录的 `plugin.json`、`mcp.json` 和 `codex-server.js` 是可分发的 Codex 插件入口。插件中的“一键诊断”通过 MCP 调用同一份 `bin/check.js --json --no-update`，与独立诊断页共用卡片和建议逻辑。插件从已安装副本读取资源，不依赖开发者电脑上的仓库路径。每次发布插件更新时必须递增 `plugin.json` 的版本号、更新 `CHANGELOG.md`，并重新执行安装与页面自检；现有 `plugins/cli-doctor-entry-probe` 目录仅保留作早期本机试验记录，不用于分发。
+仓库根目录的 `plugin.json`、`mcp.json` 和 `codex-server.js` 是可分发的 Codex 插件入口。插件中的“一键诊断”通过 MCP 调用同一份 `bin/check.js --json --no-update`，与独立诊断页共用卡片和建议逻辑。插件从已安装副本读取资源，不依赖开发者电脑上的仓库路径。每次发布更新时必须同步递增 `SKILL.md`、`package.json` 和 `plugin.json` 的统一版本号、更新 `CHANGELOG.md`，并重新执行安装与页面自检；现有 `plugins/cli-doctor-entry-probe` 目录仅保留作早期本机试验记录，不用于分发。
 
 ## 关键词
 
-CLI health check · CLI version checker · dependency audit · developer environment audit · Homebrew outdated · npm global packages · pip outdated · Rust toolchain · Bun upgrade · uv tools · macOS developer tools · read-only upgrade report · AI Agent Skill
+CLI 环境体检 · 工具版本检查 · 依赖审计 · 开发环境审计 · Homebrew 过期包 · npm 全局包 · pip 过期包 · Rust 工具链 · Bun 升级 · uv 工具 · macOS 开发工具 · 只读升级报告 · AI Agent 技能
 
-## License
+## 许可证
 
 MIT
