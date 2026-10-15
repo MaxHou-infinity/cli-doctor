@@ -131,7 +131,13 @@ dsh plugin --profile <scratch> add dsh-cli-doctor
 唯一按 npm 关键词自动收录的是 LivXue 的 dsh-plugin-shop（全量 npm 复制源扫描），
 自助诊断：`curl -s https://LivXue.github.io/dsh-plugin-shop/v1/report.md | grep '| MaxHou-infinity/cli-doctor |'`。
 
-从 Git 安装时必须带子目录，否则会静默降级成普通依赖：
+从 Git 安装可直接用仓库根（根 `package.json` 已声明 `dsh.bundle`，实测注册为 profile 层）：
+
+```bash
+dsh plugin --profile <profile> add "github:MaxHou-infinity/cli-doctor"
+```
+
+也可以只装 `dsh/` 子目录，两种方式等价：
 
 ```bash
 dsh plugin --profile <profile> add "github:MaxHou-infinity/cli-doctor#path:/dsh"
