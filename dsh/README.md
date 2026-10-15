@@ -116,4 +116,23 @@ dsh plugin --profile <scratch> add dsh-cli-doctor
 ```
 
 更新根 `CHANGELOG.md`（CLI Doctor 的 Skill / CLI / Codex 插件 / DSH 插件共用一个版本记录）。
-社区目录（dshmarket / awesome-dsh-plugin 等）按 npm 上的 `dsh-plugin`、`deepseek-harness` 关键词自动收录。
+
+## 社区目录收录
+
+社区目录**不**按 npm 关键词自动收录（早期 README 的说法有误，已更正）。实际走 GitHub 仓库：
+
+- 仓库需带 GitHub topic `dsh-plugin`（本仓库已有）；
+- 仓库里**任意** `package.json` 声明 `dsh.bundle` 即可，monorepo 子目录算数（CI 会遍历整棵树）；
+  根 `package.json` 也声明了一份 `dsh.bundle` 指向 `./dsh/cordis.patch.yml`，这样只读仓库根的扫描器也能识别；
+- **awesome-dsh-plugin 是人工 PR 收录**：一个文件 `data/plugins/MaxHou-infinity__cli-doctor.yml`
+  （`url` / `name` / `category` / `description.en` 必填），合并后 dshmarket、dshmarketplace、
+  dshget 等派生目录会跟随更新；README 由脚本生成，不要手工编辑。
+
+唯一按 npm 关键词自动收录的是 LivXue 的 dsh-plugin-shop（全量 npm 复制源扫描），
+自助诊断：`curl -s https://LivXue.github.io/dsh-plugin-shop/v1/report.md | grep '| MaxHou-infinity/cli-doctor |'`。
+
+从 Git 安装时必须带子目录，否则会静默降级成普通依赖：
+
+```bash
+dsh plugin --profile <profile> add "github:MaxHou-infinity/cli-doctor#path:/dsh"
+```

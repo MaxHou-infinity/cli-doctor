@@ -11,13 +11,33 @@
   "bugs": {
     "url": "https://github.com/MaxHou-infinity/cli-doctor/issues"
   },
+  "private": true,
+  "main": "./dsh/src/host/index.js",
+  "exports": {
+    ".": "./dsh/src/host/index.js",
+    "./client": "./dsh/lib/client.js",
+    "./cordis.patch.yml": "./dsh/cordis.patch.yml",
+    "./package.json": "./package.json"
+  },
   "bin": {
     "cli-doctor": "./bin/check.js"
   },
   "engines": {
     "node": ">=18.0.0"
   },
+  "dsh": {
+    "bundle": {
+      "patch": "./dsh/cordis.patch.yml"
+    },
+    "client": {
+      "platform": "web",
+      "inject": [
+        "@deepseek-ai/dsh-client-ui-slots"
+      ]
+    }
+  },
   "files": [
+    "dsh",
     "bin",
     "assets",
     "SKILL.md",
