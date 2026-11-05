@@ -2,6 +2,8 @@
 
 **中文** | [English](README.en.md)
 
+[![Skills](https://skills.sh/b/MaxHou-infinity/cli-doctor)](https://skills.sh/MaxHou-infinity/cli-doctor)
+
 ![cli-doctor hero](assets/cli-doctor-hero.png)
 
 在升级之前，先看清你的 CLI 环境。

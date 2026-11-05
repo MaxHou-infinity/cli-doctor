@@ -2,6 +2,8 @@
 
 [中文](README.md) | **English**
 
+[![Skills](https://skills.sh/b/MaxHou-infinity/cli-doctor)](https://skills.sh/MaxHou-infinity/cli-doctor)
+
 Understand your CLI environment before you upgrade.
 
 `cli-doctor` is a macOS-first version checker for command-line tools and development environments. It inspects Homebrew, global npm packages, Python/pip, Rust, Bun, uv, and tools with their own update mechanisms. It distinguishes tools from their supporting libraries and produces reports for people or AI agents.
