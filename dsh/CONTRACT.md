@@ -1,4 +1,4 @@
-# dsh-cli-doctor 工程契约（v1，冻结）
+# dsh-cli-doctor 工程契约（v1，冻结；**v2 增补见文末，优先级更高**）
 
 本文件是本次开发的唯一接口事实来源。**任何偏离都必须先回报 Lead，不得自行改契约。**
 
@@ -200,3 +200,107 @@ operational_review }`。**渲染必须对未知字段/null 宽容**：任何字�
 - **禁止**直接写用户的 `~/.dsh`：本地端到端验证一律用 `DSH_HOME=<workspace>/.dsh-test`。
   当前会话的文件沙箱是 workspace-write，写 `~/.dsh` 会 EPERM。
 - esbuild 的 postinstall 被 pnpm 拦了，但运行时能自己找到平台包，**可以正常用**，不要去 approve builds。
+
+---
+
+## v2 增补（2026-11-06）— 从"报告页"到"诊断中枢"
+
+> **优先级**：本增补优先于正文 v1 条款；v1 未提及处继续有效。
+> **不变的红线**：插件只读、不执行任何升级、不提供"交给 Agent 执行升级"的入口；不声明 `@deepseek-ai/dsh*` peerDependencies；client bundle 白名单仍只有 `react`、`react/jsx-runtime`。
+> 背景与设计依据见仓库根 `dsh-cli-doctor-optimization-design.md`、`.review/*.md`。
+
+### v2.1 新增/变更 Host 路由（全部受 v1 §2 围栏、405/404 语义约束）
+
+| 方法 | 路径 | 响应 |
+|---|---|---|
+| GET/HEAD | `/api/cli-doctor/health` | `200 {ok, version, busy, capabilities:{snapshot:true,history:true,cancel:true}, lastCheck:{checkedAt,mode,ageMs}\|null}` |
+| GET/HEAD | `/api/cli-doctor/snapshot[?full=1]` | `200 {ok:true, snapshot:{checkedAt,mode,elapsedMs,ageMs,stale,summary,report?}\|null, busy, cache:{ttlMs,autoCheck}}`；`?full=1` 才带完整 report |
+| GET/HEAD | `/api/cli-doctor/status` | `200 {ok:true, busy, running:{startedAt,elapsedMs,mode,waiters}\|null, lastCheck:{checkedAt,mode,ageMs}\|null, cache:{ttlMs}}` |
+| GET/HEAD | `/api/cli-doctor/history[?limit=N]` | `200 {ok:true, entries:[{checkedAt,mode,elapsedMs,summary}]}`（新→旧，默认 20，上限 100） |
+| POST | `/api/cli-doctor/check[?mode=fast\|full][&force=0]` | `200 {ok:true, report, checkedAt, mode, elapsedMs, cache:'fresh'\|'hit'\|'attached', shared}` |
+| POST | `/api/cli-doctor/check/cancel` | `200 {ok:true, cancelled:<bool>}` |
+
+- **不再返回 409 busy**：已有诊断在跑时，新请求 attach 同一次 run，等它结束后返回同一份结果（`cache:'attached'`，`shared:true`）。同一时刻仍只 spawn 一个子进程。
+- `force=0` 且快照未过期（`ageMs < ttlMs`）时直接返回缓存（`cache:'hit'`）；默认 `force=1`（保留 v0.2 每次点击必跑的行为）。
+- 取消：向子进程发 SIGTERM，5 s 后 SIGKILL（POSIX 用 detached + 进程组，Windows 用 `taskkill /T /F`）；所有在当前 run 上等待的请求收到 `500 {ok:false,error:'cancelled'}`；`busy` 必须在子进程真正 close 后才复位。
+- 错误码新增 `cancelled`；其余沿用 v1（`forbidden` / `method` / `not-found` / `timeout` / `output-too-large` / `invalid-json` / `spawn-error` / `exit-N` / `signal-X`）。诊断失败（`POST /check` 的 500）响应体为 `{ok:false, error:<code>, detail?:<string≤2KB stderr 尾>, elapsedMs?:<number>}`。
+- 无快照时 `/snapshot` 返回 `200 {ok:true, snapshot:null, ...}`（不是 404）。
+
+### v2.2 Host 状态、持久化与配置
+
+- 内存态：`snapshot = {report, checkedAt, mode, elapsedMs}`；`history = [{checkedAt, mode, elapsedMs, summary}]`（≤ `keepHistory` 条，只存摘要）。
+- `summary` 形状（≤ 1 KB）：`{toolCount, depCount, updateCount, recommendedCount, reviewCount, unknownCount, conflictCount, uncertainCount, generatedAt, checkedAt, mode, stale}`；其中 `conflictCount`/`uncertainCount` 统计**依赖层** `impact.conflicts` / `impact.uncertain` 非空的条目数（补充 v1 只统计工具层的口径，不改变 v1 五个计数语义）。
+- **落盘**：`<dataDir>/state.json`，`dataDir = config.dataDir || ($DSH_HOME || ~/.dsh)/storages/cli-doctor`；形状 `{schemaVersion:1, snapshot:{report,checkedAt,mode,elapsedMs}, history:[...]}`。
+  - 读取失败/JSON 损坏：忽略并从空状态启动，**不得抛错**；写失败只写日志，不得影响响应。
+  - 原子写：同目录临时文件 + `fsync` + `rename`；目录 `0700`、文件 `0600`。
+  - 测试必须注入临时 `dataDir`（或 `persist:false`），**禁止写用户真实 `~/.dsh`**；`apply()` 加载不得阻塞超过 50 ms。
+- Host 不自带定时器：自动检查由 client 在打开面板时按 stale-gate 触发；Host 只负责快照/TTL/共享请求。
+- 子进程：`mode=full → ['--json','--no-update']`；`mode=fast → ['--json','--fast','--no-update']`；响应必须带 `mode`，面板对 fast 结果必须显式标注（v0.3.0 客户端默认只用 full）。
+- spawn env：`{...process.env, HOMEBREW_NO_AUTO_UPDATE:'1', HOMEBREW_NO_ANALYTICS:'1', PIP_DISABLE_PIP_VERSION_CHECK:'1', NO_COLOR:'1'}`（用户已有值时以用户值优先；测试断言）。
+- 配置键（`cordis.patch.yml` 默认块，代码内 `resolveConfig` 兜底）：`autoCheck:true`、`staleAfterHours:12`、`keepHistory:20`、`checkTimeoutMs:900000`（现有 8 min 小于最坏路径 >13 min）；测试 seam 保留 `checkPath/execPath/spawn/timeoutMs/maxOutputBytes/logger/dataDir/persist`。
+- 环境变量 seam（仅测试/集成隔离）：`CLI_DOCTOR_CHECK_PATH`（v1 已有）、`CLI_DOCTOR_AUTO_CHECK=0|1`（默认 1，透出到 `/snapshot.cache.autoCheck`，客户端据此决定是否自动触发）。
+
+### v2.3 客户端行为（v0.3.0 第一批）
+
+- 新增模块级 store（`dsh/src/client/store.js`）：`{phase:'idle'|'running'|'done'|'error', report, checkedAt, mode, error, autoStarted}`；订阅用 `useSyncExternalStore`（无则退化为 `useState/useEffect`），`dispose` 时 reset。
+- **覆盖 v1 §3.4:141**：组件卸载**不再 abort 在途请求**，状态保留在 store 中跨挂载存活；取消只能由用户点"取消"（调 `POST /check/cancel`）。
+- 挂载引导（顺序固定）：
+  1. `GET /health` → version / busy；
+  2. `GET /snapshot?full=1` → 有快照立即渲染（phase='done'），记录 `cache.ttlMs/autoCheck`；无快照进入空态；
+  3. `autoCheck` 为真且（无快照 或 `ageMs > ttlMs`）时自动 `POST /check`（full）一次；同一 store 生命周期只自动触发一次；若已有 run 则靠 attach 共享；
+  4. running 时 1 s 刷新等待时长；可取消。
+- 结果渲染保留 v1 §3.4 全部要求（五计数、五生态分块、工具/依赖两层、未知字段容错、只读 footer、唯一滚动容器 `data-dsh-cli-doctor-scroll`），并新增：
+  - 顶部相对时间与过期提示（"上次诊断 X 前 / 数据已过期"）；
+  - **依赖语义修复**：依赖条目无 `outdated` 时，状态显示「候选更新 · 待核验」（review 色），建议显示「依赖更新需人工核验」；不得再出现「有可用更新」+「无法判断」并存；
+  - 汇总计数保持工具层口径，另增「依赖冲突 N / 依赖待核验 N」两格（N>0 才渲染）；
+  - 自动检查/取消用 `aria-busy` 与 `aria-live` 正确表达（只在 phase 变化播报，禁止每秒刷屏）；
+  - 状态色改为 `var(--dsw-alias-*, 回退值)`（映射见设计文档附录 E），不得新增硬编码语义色；
+  - 仍只 require `react` / `react/jsx-runtime`，纯度门禁不变。
+
+### v2.4 模块基线（0.2.2-rc.1 实测，替代 v1 §3.2 的 9 项清单）
+
+浏览器 `staticModules` 实为 11 项：`react`、`react/jsx-runtime`、`react-dom`、`react-dom/client`、`@deepseek-ai/cordis`、`zod`、`@tanstack/react-virtual`、`@deepseek-ai/dsh-client-store`、`@deepseek-ai/dsh-client-ui-slots`、`@deepseek-ai/dsh-client-ui-primitives`、`@deepseek-ai/dsh-client-ui-dockkit`。
+本插件构建白名单 **仍只开 `react` 与 `react/jsx-runtime`**，v0.3.0 不新增；`dsh.client.inject` 暂保留现状（v0.4 清理）。
+
+### v2.5 测试与验收（v0.3.0 第一批）
+
+- `cd dsh && npm test` 全绿；新增覆盖：并发共享同一 run、缓存命中/强制刷新、取消、快照与持久化往返、损坏文件容错、TTL 语义、依赖语义一致性、自动检查只触发一次、切页状态恢复、fast/full 参数与 env 注入。
+- e2e：更新 `e2e-api`（并发 200 + snapshot/status/cancel/persistence）、`view-contract`、`panel-behavior`；使用 `DSH_HOME=<repo>/.dsh-test`，不碰 `~/.dsh`；在当前运行时（desktop 0.2.2-rc.1 / PATH dsh 0.2.1-rc.5）跑通。
+- README：修正 Git 安装自相矛盾；补"结果缓存 / 过期自动检查 / 可取消 / 只读边界（不执行升级、不提供 Agent 执行）"。
+
+### v2.6 环境事实补充
+
+- desktop 运行时 **0.2.2-rc.1** 在 `app.asar` 内；PATH 上 `dsh` 为 **0.2.1-rc.5**；`~/.dsh/profiles/node_modules/@deepseek-ai/*` 多为指向 0.2.1-rc.5 的链接（部分断链）。平台 API 取证以 0.2.2-rc.1 为准。
+- 本地 e2e 一律 `DSH_HOME=<workspace>/.dsh-test`。
+
+### v2.7 第一批范围（2026-11-06 定稿）
+
+- **Host**：共享请求（去 409）、内存快照、`/snapshot`、`/status`、`/history`、`/check/cancel`、落盘持久化、env 卫生、TTL 暴露。
+- **Client**：模块 store、挂载引导与自动检查、取消、快照恢复、依赖语义修复、主题 token、过期提示。
+- **不做（后续批次）**：工具栏搜索/筛选/排序、紧凑行（第二批）；徽标/通知/agent 工具/prompt 命令（第三批）；配置表单（后置，已决定暂不做）；"交给 Agent 执行升级"（**永久不做**）。
+
+### v2.8 面板操作（2026-11-06 第二批-1：复制报告 + 汇总卡片筛选）
+
+#### 复制诊断报告（只读导出）
+
+- 面板在已有报告时提供两个复制动作：
+  - 主按钮「复制报告」：复制 **AI 友好的 Markdown**，由纯函数 `buildMarkdownReport(report, meta)` 生成（必须可单测，不依赖 React/DOM）。
+  - 次按钮「复制原始 JSON」：复制 `JSON.stringify(report, null, 2)`（check.js 原始报告，不加工）。
+- Markdown 报告必须包含：标题；生成时间 / 检查时间 / 模式 / 耗时 / 范围 / 插件版本；汇总计数（含依赖冲突/待核验）；按生态分组的**可行动工具**明细（名称/当前/目标/状态/建议/升级命令/依赖影响摘要/note）；依赖**冲突与待核验**明细；已是最新工具的名称列表；`skipped`/降级说明；只读策略与状态语义说明；数据来源。不得出现任何执行升级的指令或"请运行"式诱导。
+- 剪贴板：优先 `navigator.clipboard.writeText`；不可用或失败时**不得抛错、不得注入全局样式/DOM**，改为在面板内渲染只读 `<textarea>`（React 渲染，内联样式）显示同一文本供手动复制，并给出可读提示。
+- 复制成功后 2 秒内显示「已复制」反馈（`aria-live="polite"`）；失败显示可读原因。复制动作不发网络请求、不改变报告。
+- 现有剪贴板不可用的降级路径必须可单测（注入 clipboard seam）。
+
+#### 汇总卡片即时筛选
+
+- 顶部 5 个汇总格改为 `<button type="button" aria-pressed>`；点击后以**同一判定函数**过滤下方工具列表，再次点击或点「清除筛选」取消：
+  - 已发现工具 → 全部（清除筛选）；
+  - 有可用更新 → `statusFor(item,'工具')[1] ∈ {update, review}`；
+  - 建议更新 → `recommendationFor(item,'工具')[1] === 'recommended'`；
+  - 需核验或暂缓 → `recommendationFor(item,'工具')[1] ∈ {review, blocked}`；
+  - 目标待核验 → `statusFor(item,'工具')[1] ∈ {unknown, anomaly}`。
+  判定必须与 `summarize()` 五计数复用同一纯函数（禁止复制条件），保证卡片数字与筛选结果一致。
+- 筛选状态进 client store，跨挂载保留，`dispose` 时重置。
+- 筛选生效时：只渲染匹配的工具卡；无匹配的生态分块隐藏；依赖层隐藏并显示一行说明（依赖计数仍在汇总/分块头）；分块头显示「匹配 N / 共 M」；空结果提供清除入口。
+- 卡片计数保持全局口径（不随筛选变化）；活动卡 `aria-pressed="true"` 且有可见选中样式（使用主题 token，不新增硬编码色）。
+- 纯函数（判定 + Markdown 生成）放在 client 模块内，必须由 `node --test test/client.test.mjs` 覆盖；JSX 与 DOM 只做接线。

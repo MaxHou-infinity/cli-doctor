@@ -16,6 +16,7 @@
  */
 import { CliDoctorIcon } from './icon.jsx';
 import { CliDoctorPanel } from './panel.jsx';
+import { resetStore } from './store.js';
 
 /** Sidebar row id, shared with the `main` slot key. */
 export const PANEL_ID = 'cli-doctor';
@@ -37,7 +38,9 @@ const MISSING_SLOTS = 'cli-doctor: client slot service unavailable; panel not re
  * seat (plus the rest of the Web GUI) keeps working — an external plugin must
  * not take the shell's boot down. Registration happens inside `ctx.effect` when
  * the runtime offers it, and the same disposer is also returned, so either
- * convention releases both seats; disposal is idempotent.
+ * convention releases both seats; disposal is idempotent. Disposal also resets
+ * the module store (CONTRACT.md §v2.3), so an HMR reload or profile change does
+ * not inherit a report from the previous plugin instance.
  *
  * @param ctx - client root context (services: slots).
  * @returns disposer releasing both registrations.
@@ -64,6 +67,7 @@ export function apply(ctx) {
         }
       }
     }
+    resetStore();
   };
 
   const register = (seat, options, component) => {

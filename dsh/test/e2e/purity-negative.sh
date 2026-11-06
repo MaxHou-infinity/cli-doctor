@@ -60,19 +60,24 @@ node -e '
   const fs = require("node:fs");
   const file = process.argv[1];
   const source = fs.readFileSync(file, "utf8");
-  const marker = "import { CliDoctorIcon } from \x27./icon.jsx\x27;";
-  if (!source.includes(marker)) { console.error("source anchor not found"); process.exit(1); }
-  fs.writeFileSync(file, source.replace(marker, `import \x27react-dom\x27;\n${marker}`));
+  // Append the forbidden import instead of pinning one specific import line:
+  // the client entry file may legitimately gain imports as v2 lands.
+  fs.writeFileSync(file, source + "\nimport \x27react-dom\x27;\n");
 ' "$WORK/src/client/index.jsx" || PATCH_SRC_RC=1
 assert_eq "patched the copy's client source" "0" "$PATCH_SRC_RC"
 PATCH_BUILD_RC=0
 node -e '
   const fs = require("node:fs");
   const file = process.argv[1];
-  const source = fs.readFileSync(file, "utf8");
-  const from = "external: [...ALLOWED_REQUIRES],";
-  if (!source.includes(from)) { console.error("build anchor not found"); process.exit(1); }
-  fs.writeFileSync(file, source.replace(from, "external: [...ALLOWED_REQUIRES, \x27react-dom\x27],"));
+  let source = fs.readFileSync(file, "utf8");
+  // Preferred anchor is the v1 spelled allowlist; fall back to any `external:`
+  // list literal so a renamed constant does not silently skip the negative case.
+  let next = source.replace("external: [...ALLOWED_REQUIRES],", "external: [...ALLOWED_REQUIRES, \x27react-dom\x27],");
+  if (next === source) {
+    next = source.replace(/external:\s*\[([^\]]*)\]/, (_match, body) => `external: [${body},\x27react-dom\x27]`);
+  }
+  if (next === source) { console.error("build anchor not found"); process.exit(1); }
+  fs.writeFileSync(file, next);
 ' "$WORK/scripts/build-client.mjs" || PATCH_BUILD_RC=1
 assert_eq "patched the copy's build script" "0" "$PATCH_BUILD_RC"
 say "patched copy: src/client/index.jsx imports react-dom; build marks it external"

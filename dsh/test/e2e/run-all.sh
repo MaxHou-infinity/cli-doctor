@@ -7,14 +7,19 @@
 # aggregates pass/fail. It never writes outside the repository: DSH_HOME is
 # forced to <repo>/.dsh-test by lib.sh, and the user's real ~/.dsh is refused.
 #
-# Stages
+# Stages (CONTRACT v2)
 #   1 build-repro.sh --with-tests   build idempotence + author suite
-#   2 load-client-bundle.mjs        loader shell, slots, disposers, first paint
-#   3 view-contract.mjs             pure view semantics + malformed reports
-#   4 panel-behavior.mjs            jsdom click-through, loading/error states
+#   2 load-client-bundle.mjs        loader shell, slots, disposers, first paint, v2 surface
+#   3 view-contract.mjs             pure view semantics + v2 dependency semantics
+#   4 panel-behavior.mjs            jsdom boot/restore/auto-check/cancel/render
 #   5 purity-negative.sh            purity gate must reject a foreign require
 #   6 codex-decouple.sh             Codex paths untouched + smoke test
-#   7 e2e-api.sh                    real scratch profile + HTTP matrix
+#   7 e2e-api.sh                    real scratch profile + HTTP matrix (v2 routes)
+#   8 e2e-failure-paths.sh          structured failure codes + snapshot invariance
+#   9 e2e-browser-layout.sh         real Chrome layout/scroll measurement
+#
+# The e2e-api stage is the only stage that runs a real diagnosis (~70 s); the
+# browser stage reuses the snapshot it persisted unless the cache is empty.
 
 . "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/lib.sh"
 

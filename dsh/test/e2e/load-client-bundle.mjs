@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 /**
- * Independent loader harness for `dsh/lib/client.js`.
+ * Independent loader harness for `dsh/lib/client.js` (CONTRACT v2).
  *
  * Executes the shipped bundle exactly the way the DSH Web GUI does — through a
  * fake `window.__ModuleLoader__` — and then checks the two seats, their
@@ -13,7 +13,11 @@
  *     `react` / `react/jsx-runtime` throws, which is what proves the bundle only
  *     needs the two modules the contract names;
  *   - the panel component is rendered with the real React from the package's
- *     devDependencies, so hooks and JSX actually run.
+ *     devDependencies, so hooks and JSX actually run;
+ *   - v2: the shipped bytes must carry the snapshot/status/cancel wiring and the
+ *     dependency-status copy (§v2.3), and the first paint must not promise "no
+ *     automatic diagnosis" any more (an auto check exists but runs in effects,
+ *     so it is invisible to a static render).
  *
  * Usage:
  *   node dsh/test/e2e/load-client-bundle.mjs [bundle-path]
@@ -171,31 +175,111 @@ eq('disposal is idempotent', false, secondDisposeThrew)
 
 /* ----------------------------------------------------------- first paint --- */
 
-section('panel first paint (real React, react-dom/server)')
+section('panel first paint (real React, jsdom)')
 try {
+  const { JSDOM } = nodeRequire('jsdom')
+  const dom = new JSDOM('<!doctype html><html><body><div id="root"></div></body></html>', {
+    url: 'http://127.0.0.1:19390/',
+    pretendToBeVisual: true,
+  })
+  const { window } = dom
+  globalThis.window = window
+  globalThis.document = window.document
+  Object.defineProperty(globalThis, 'navigator', { value: window.navigator, configurable: true })
+  globalThis.HTMLElement = window.HTMLElement
+  globalThis.Element = window.Element
+  globalThis.Node = window.Node
+  globalThis.Event = window.Event
+  globalThis.MouseEvent = window.MouseEvent
+  globalThis.getComputedStyle = window.getComputedStyle.bind(window)
+  globalThis.requestAnimationFrame = window.requestAnimationFrame.bind(window)
+  globalThis.cancelAnimationFrame = window.cancelAnimationFrame.bind(window)
+  globalThis.IS_REACT_ACT_ENVIRONMENT = true
+  // The v2 panel boots from the module store (health -> snapshot -> maybe one
+  // auto check). Stub both boot reads with autoCheck=false so the first paint is
+  // deterministic and never starts a diagnosis.
+  globalThis.fetch = async (input, init = {}) => {
+    const url = typeof input === 'string' ? input : input?.url ?? ''
+    const method = (init.method ?? 'GET').toUpperCase()
+    if (method === 'GET' && url.includes('/api/cli-doctor/health')) {
+      return new Response(JSON.stringify({ ok: true, version: '0.3.0', busy: false }), { status: 200, headers: { 'content-type': 'application/json' } })
+    }
+    if (method === 'GET' && url.includes('/api/cli-doctor/snapshot')) {
+      return new Response(JSON.stringify({ ok: true, snapshot: null, busy: false, cache: { ttlMs: 12 * 60 * 60 * 1000, autoCheck: false } }), { status: 200, headers: { 'content-type': 'application/json' } })
+    }
+    return new Response(JSON.stringify({ ok: false, error: 'not-found' }), { status: 404, headers: { 'content-type': 'application/json' } })
+  }
+  window.fetch = globalThis.fetch
+
   const React = bundleRequire('react')
-  const { renderToStaticMarkup } = nodeRequire('react-dom/server')
-  const html = renderToStaticMarkup(React.createElement(moduleExports.CliDoctorPanel))
+  const { createRoot } = nodeRequire('react-dom/client')
+  const act = React.act ?? nodeRequire('react-dom/test-utils').act
+  const container = document.getElementById('root')
+  const root = createRoot(container)
+  await act(async () => { root.render(React.createElement(moduleExports.CliDoctorPanel)) })
+  // Let the two boot fetches (and the render they trigger) settle.
+  for (let i = 0; i < 8; i += 1) {
+    await act(async () => { await new Promise((resolve) => setTimeout(resolve, 0)) })
+  }
+  const html = container.innerHTML
   eq('panel renders markup', true, html.length > 0)
-  const hasButton = html.includes('一键诊断当前状态')
-  if (hasButton) ok('panel shows the "一键诊断当前状态" button')
+  const hasButton = /一键诊断当前状态|重新诊断|诊断当前状态/.test(container.textContent ?? '')
+  if (hasButton) ok('panel shows the diagnosis button')
   else bad('panel does not show the diagnosis button', html.slice(0, 400))
   if (/<button[^>]*type="button"/.test(html)) ok('button carries type="button"')
   else bad('no <button type="button"> in the first paint', html.slice(0, 400))
-  if (html.includes('首次打开不会自动检查')) ok('first paint states that no automatic diagnosis runs')
-  else bad('first paint does not state that no automatic diagnosis runs', html.slice(0, 400))
+  // CONTRACT v2.3 boots the auto check from effects, so the first paint is the
+  // empty state. Assert the scroll seat exists rather than the removed v1
+  // "no automatic diagnosis" promise.
+  if (html.includes('data-dsh-cli-doctor-scroll')) ok('first paint carries the v2 scroll seat')
+  else bad('first paint is missing [data-dsh-cli-doctor-scroll]', html.slice(0, 400))
+  // The copy is config-aware: with autoCheck=false the panel must say so, and
+  // the bundle must also carry the auto-check variant used when it is on.
+  if (html.includes('首次打开不会自动检查')) ok('autoCheck=false first paint explains that no automatic diagnosis runs')
+  else bad('autoCheck=false first paint is missing the manual-only hint', html.slice(0, 500))
+  if (source.includes('首次打开会自动做一次只读诊断')) ok('bundle carries the v2 automatic-diagnosis hint')
+  else bad('bundle is missing the v2 automatic-diagnosis hint')
   // The footer text is rendered together with a report, so the static bundle
   // check below is the right evidence for it; the click-through harness
   // (panel-behavior.mjs) proves it appears once a report is on screen.
   if (source.includes('未执行任何升级')) ok('bundle carries the read-only footer copy')
   else bad('bundle does not carry the read-only footer copy')
-  if (html.includes('CLI Doctor')) ok('panel shows the CLI Doctor title')
+  if ((container.textContent ?? '').includes('CLI Doctor')) ok('panel shows the CLI Doctor title')
   else bad('panel does not show the CLI Doctor title', html.slice(0, 400))
+  if ((container.textContent ?? '').includes('0.3.0')) ok('panel shows the Host-reported plugin version')
+  else bad('panel does not show the Host-reported version', html.slice(0, 400))
+  // v2.8 copy actions only exist once a report is rendered.
+  if (!html.includes('复制报告') && !html.includes('复制原始 JSON')) ok('first paint (no report) offers no copy action')
+  else bad('first paint offers a copy action before any report exists', html.slice(0, 500))
+
+  section('v2 client surface in the shipped bundle (CONTRACT §v2.3)')
+  for (const [label, needle] of [
+    ['snapshot endpoint', '/api/cli-doctor/snapshot'],
+    ['status endpoint', '/api/cli-doctor/status'],
+    ['cancel endpoint', '/api/cli-doctor/check/cancel'],
+    ['relative-time copy', '上次诊断'],
+    ['dependency status copy', '候选更新'],
+    ['dependency recommendation copy', '依赖更新需人工核验'],
+    ['theme token state colors', '--dsw-alias-'],
+    ['report copy label', '复制报告'],
+    ['raw JSON copy label', '复制原始 JSON'],
+    ['copy fallback marker', 'data-dsh-cli-doctor-copy'],
+    ['copy feedback marker', 'data-dsh-cli-doctor-copy-feedback'],
+    ['copy success copy', '已复制'],
+    ['summary filter clear label', '清除筛选'],
+    ['summary filter match prefix', '匹配 '],
+    ['summary card aria-pressed', 'aria-pressed'],
+    ['markdown report title', '# CLI Doctor 诊断报告'],
+  ]) {
+    if (source.includes(needle)) ok(`bundle carries the ${label}`)
+    else bad(`bundle is missing the ${label}`, `looked for ${JSON.stringify(needle)}`)
+  }
+
+  await act(async () => { root.unmount() })
+  try { dom.window.close() } catch { /* nothing to close */ }
 } catch (error) {
   bad('panel render threw', error && error.message ? error.message : String(error))
 }
-
-/* ------------------------------------------------------------ icon props --- */
 
 section('icon component')
 try {

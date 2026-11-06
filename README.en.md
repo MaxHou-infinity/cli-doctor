@@ -8,7 +8,7 @@ Understand your CLI environment before you upgrade.
 
 `cli-doctor` is a macOS-first version checker for command-line tools and development environments. It inspects Homebrew, global npm packages, Python/pip, Rust, Bun, uv, and tools with their own update mechanisms. It distinguishes tools from their supporting libraries and produces reports for people or AI agents.
 
-Current version: **v0.2.0**. The Agent Skill, CLI, and Codex sidebar plugin share one version number. See [CHANGELOG.md](CHANGELOG.md) for release notes in Chinese.
+Current version: **v0.3.0**. The Agent Skill, CLI, and Codex sidebar plugin share one version number. See [CHANGELOG.md](CHANGELOG.md) for release notes in Chinese.
 
 **It tells you what may need an update and what an upgrade could affect. You decide whether to upgrade.**
 

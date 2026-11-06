@@ -11,8 +11,15 @@
 import assert from 'node:assert/strict'
 import { spawn } from 'node:child_process'
 import { EventEmitter } from 'node:events'
-import { readFileSync } from 'node:fs'
+import {
+  mkdtempSync,
+  readFileSync,
+  rmSync,
+  statSync,
+  writeFileSync,
+} from 'node:fs'
 import http from 'node:http'
+import { tmpdir } from 'node:os'
 import path from 'node:path'
 import test from 'node:test'
 import { fileURLToPath } from 'node:url'
@@ -27,7 +34,20 @@ const SOURCE_PATH = path.join(PKG_ROOT, 'src', 'host', 'index.js')
 
 const HEALTH = '/api/cli-doctor/health'
 const CHECK = '/api/cli-doctor/check'
+const CANCEL = '/api/cli-doctor/check/cancel'
+const SNAPSHOT = '/api/cli-doctor/snapshot'
+const STATUS = '/api/cli-doctor/status'
+const HISTORY = '/api/cli-doctor/history'
 const JSON_TYPE = 'application/json; charset=utf-8'
+
+/** Temporary data directories created by one test, removed in its `finally`. */
+function makeTempDataDir(t, prefix = 'cli-doctor-host-') {
+  const dir = mkdtempSync(path.join(tmpdir(), prefix))
+  if (t !== undefined && typeof t.after === 'function') {
+    t.after(() => { try { rmSync(dir, { recursive: true, force: true }) } catch { /* already gone */ } })
+  }
+  return dir
+}
 
 /* ------------------------------------------------------------------ harness */
 
@@ -56,7 +76,9 @@ function makeCtx() {
 /** Apply the plugin and return the registered route plus lifecycle handles. */
 function boot(config = {}) {
   const harness = makeCtx()
-  host.apply(harness.ctx, config)
+  // Tests must never write the user's real ~/.dsh: persistence defaults off and
+  // every persistence test injects its own temporary dataDir.
+  host.apply(harness.ctx, { persist: false, ...config })
   assert.equal(harness.routes.length, 1, 'apply must register exactly one route')
   const route = harness.routes[0]
   return {
@@ -113,6 +135,14 @@ async function request(handler, req) {
 function json(res) {
   assert.ok(res.body !== undefined && res.body !== '', `expected a JSON body, got ${JSON.stringify(res.body)}`)
   return JSON.parse(res.body)
+}
+
+/** A diagnosis failure body: the code is stable; detail/elapsedMs are additive. */
+function assertDiagnosisFailure(body, code) {
+  assert.equal(body.ok, false)
+  assert.equal(body.error, code)
+  if (body.detail !== undefined) assert.equal(typeof body.detail, 'string')
+  if (body.elapsedMs !== undefined) assert.equal(typeof body.elapsedMs, 'number')
 }
 
 /** Assert the two contract headers on every response. */
@@ -240,6 +270,45 @@ const SAMPLE_REPORT = {
   },
 }
 
+/** A report exercising every v2 summary counter (tools + dependency risks). */
+const RICH_REPORT = {
+  generated_at: '2026-10-13T01:02:03Z',
+  scope: '本机 CLI 工具与依赖包版本现状（只读检查）',
+  elapsed_ms: 42,
+  skipped: [],
+  managers: {
+    homebrew: {
+      tools: [
+        {
+          name: 'safe-tool',
+          current: '1.2.0',
+          latest: '1.3.0',
+          outdated: true,
+          upgrade_cmd: 'brew upgrade safe-tool',
+          impact: { checked: true, scope: 'x', dependents: [], indirect: [], conflicts: [], uncertain: [] },
+        },
+        { name: 'unknown-tool', current: '0.1.0', latest: null, outdated: null },
+      ],
+      deps: [
+        {
+          name: 'conflicted-lib',
+          current: '1.0.0',
+          latest: '2.0.0',
+          outdated: null,
+          impact: { checked: true, scope: 'x', dependents: [], indirect: [], conflicts: [{ name: 'parent' }], uncertain: [] },
+        },
+        {
+          name: 'uncertain-lib',
+          current: '1.0.0',
+          latest: '1.1.0',
+          outdated: null,
+          impact: { checked: true, scope: 'x', dependents: [], indirect: [], conflicts: [], uncertain: [{ name: 'maybe' }] },
+        },
+      ],
+    },
+  },
+}
+
 /* ------------------------------------------------------------ module surface */
 
 test('module exports the Cordis function-plugin surface', () => {
@@ -301,7 +370,13 @@ test('GET health returns ok/version/busy with the contract headers', async () =>
   }))
   assert.equal(res.statusCode, 200)
   assertJsonHeaders(res)
-  assert.deepEqual(json(res), { ok: true, version: PKG_VERSION, busy: false })
+  assert.deepEqual(json(res), {
+    ok: true,
+    version: PKG_VERSION,
+    busy: false,
+    capabilities: { snapshot: true, history: true, cancel: true },
+    lastCheck: null,
+  })
   assert.equal(spawnImpl.calls.length, 0)
 })
 
@@ -485,6 +560,10 @@ test('POST check runs check.js --json --no-update and returns the report', async
   const body = json(res)
   assert.equal(body.ok, true)
   assert.deepEqual(body.report, SAMPLE_REPORT)
+  assert.equal(body.mode, 'full')
+  assert.equal(body.cache, 'fresh')
+  assert.equal(body.shared, false)
+  assert.equal(typeof body.elapsedMs, 'number')
   assert.equal(typeof body.checkedAt, 'string')
   const checkedAt = Date.parse(body.checkedAt)
   assert.ok(Number.isFinite(checkedAt), `checkedAt must be an ISO timestamp: ${body.checkedAt}`)
@@ -494,9 +573,16 @@ test('POST check runs check.js --json --no-update and returns the report', async
   const call = spawnImpl.calls[0]
   assert.equal(call.cmd, process.execPath)
   assert.deepEqual(call.args, [CHECK_PATH, '--json', '--no-update'])
-  assert.deepEqual(Object.keys(call.opts).sort(), ['cwd', 'env'])
+  assert.deepEqual(
+    Object.keys(call.opts).sort(),
+    process.platform === 'win32' ? ['cwd', 'env'] : ['cwd', 'detached', 'env'],
+  )
   assert.equal(call.opts.cwd, PKG_ROOT)
-  assert.equal(call.opts.env, process.env)
+  assert.equal(call.opts.env.HOMEBREW_NO_AUTO_UPDATE, '1')
+  assert.equal(call.opts.env.HOMEBREW_NO_ANALYTICS, '1')
+  assert.equal(call.opts.env.PIP_DISABLE_PIP_VERSION_CHECK, '1')
+  assert.equal(call.opts.env.NO_COLOR, '1')
+  assert.equal(call.opts.env.PATH, process.env.PATH)
 })
 
 test('check tolerates stderr noise on a successful run', async () => {
@@ -526,17 +612,26 @@ test('health reports busy while a diagnosis is running', async () => {
   await until(() => spawnImpl.calls.length === 1, 1000, 'spawn')
 
   const busyRes = await request(harness.handler, makeReq({ headers }))
-  assert.deepEqual(json(busyRes), { ok: true, version: PKG_VERSION, busy: true })
+  const busyBody = json(busyRes)
+  assert.equal(busyBody.ok, true)
+  assert.equal(busyBody.version, PKG_VERSION)
+  assert.equal(busyBody.busy, true)
+  assert.deepEqual(busyBody.capabilities, { snapshot: true, history: true, cancel: true })
+  assert.equal(busyBody.lastCheck, null)
 
   succeedWith(spawnImpl.calls[0].child, SAMPLE_REPORT)
   await until(() => checkRes.writableEnded, 2000, 'check response')
   const idleRes = await request(harness.handler, makeReq({ headers }))
-  assert.deepEqual(json(idleRes), { ok: true, version: PKG_VERSION, busy: false })
+  const idleBody = json(idleRes)
+  assert.equal(idleBody.busy, false)
+  assert.equal(idleBody.lastCheck.mode, 'full')
+  assert.equal(typeof idleBody.lastCheck.checkedAt, 'string')
+  assert.equal(typeof idleBody.lastCheck.ageMs, 'number')
 })
 
-/* --------------------------------------------------------- single flight */
+/* ------------------------------------------------------- shared single flight */
 
-test('a concurrent check is refused with 409 busy and no second spawn', async () => {
+test('concurrent checks share one run: no 409, same result, one spawn', async () => {
   const spawnImpl = makeSpawn()
   const harness = boot({ spawn: spawnImpl })
   const headers = { host: '127.0.0.1', origin: 'http://127.0.0.1' }
@@ -545,24 +640,108 @@ test('a concurrent check is refused with 409 busy and no second spawn', async ()
   harness.handler(makeReq({ method: 'POST', url: CHECK, headers }), first)
   await until(() => spawnImpl.calls.length === 1, 1000, 'first spawn')
 
+  const attachedRes = []
   for (let i = 0; i < 3; i += 1) {
-    const res = await request(harness.handler, makeReq({ method: 'POST', url: CHECK, headers }))
-    assert.equal(res.statusCode, 409)
-    assertJsonHeaders(res)
-    assert.deepEqual(json(res), { ok: false, error: 'busy' })
+    const res = makeRes()
+    harness.handler(makeReq({ method: 'POST', url: CHECK, headers }), res)
+    attachedRes.push(res)
+  }
+  assert.equal(spawnImpl.calls.length, 1, 'attached requests must not spawn')
+
+  // The initiating request is the only waiter reported while every response
+  // is still pending; the attached ones joined the same waiter set.
+  const status = await request(harness.handler, makeReq({ url: STATUS, headers }))
+  const statusBody = json(status)
+  assert.equal(statusBody.busy, true)
+  assert.equal(statusBody.running.waiters, 4)
+
+  succeedWith(spawnImpl.calls[0].child, SAMPLE_REPORT)
+  await until(() => first.writableEnded && attachedRes.every(res => res.writableEnded), 2000, 'all responses')
+
+  const fresh = json(first)
+  assert.equal(fresh.ok, true)
+  assert.equal(fresh.cache, 'fresh')
+  assert.equal(fresh.shared, false)
+  assert.deepEqual(fresh.report, SAMPLE_REPORT)
+  for (const res of attachedRes) {
+    assert.equal(res.statusCode, 200)
+    const body = json(res)
+    assert.equal(body.ok, true)
+    assert.equal(body.cache, 'attached')
+    assert.equal(body.shared, true)
+    assert.equal(body.checkedAt, fresh.checkedAt)
+    assert.deepEqual(body.report, SAMPLE_REPORT)
   }
   assert.equal(spawnImpl.calls.length, 1)
 
-  succeedWith(spawnImpl.calls[0].child, SAMPLE_REPORT)
-  await until(() => first.writableEnded, 2000, 'first response')
-  assert.equal(json(first).ok, true)
-
+  // A later POST starts a new run (fresh snapshot still respects default force=1).
   const next = makeRes()
   harness.handler(makeReq({ method: 'POST', url: CHECK, headers }), next)
   await until(() => spawnImpl.calls.length === 2, 1000, 'second spawn')
   succeedWith(spawnImpl.calls[1].child, SAMPLE_REPORT)
   await until(() => next.writableEnded, 2000, 'second response')
   assert.equal(json(next).ok, true)
+})
+
+test('force=0 returns the cached snapshot without spawning', async () => {
+  const spawnImpl = makeSpawn(child => { succeedWith(child, SAMPLE_REPORT) })
+  const harness = boot({ spawn: spawnImpl })
+  const headers = { host: '127.0.0.1', 'sec-fetch-site': 'same-origin' }
+
+  const first = await request(harness.handler, makeReq({ method: 'POST', url: CHECK, headers }))
+  const firstBody = json(first)
+  assert.equal(firstBody.cache, 'fresh')
+
+  const hit = await request(harness.handler, makeReq({ method: 'POST', url: `${CHECK}?force=0`, headers }))
+  const hitBody = json(hit)
+  assert.equal(hit.statusCode, 200)
+  assert.equal(hitBody.ok, true)
+  assert.equal(hitBody.cache, 'hit')
+  assert.equal(hitBody.checkedAt, firstBody.checkedAt)
+  assert.deepEqual(hitBody.report, SAMPLE_REPORT)
+  assert.equal(spawnImpl.calls.length, 1, 'a cache hit must not spawn')
+
+  // Default force=1 keeps the v0.2 "every click runs" behaviour.
+  const forced = makeRes()
+  harness.handler(makeReq({ method: 'POST', url: CHECK, headers }), forced)
+  await until(() => spawnImpl.calls.length === 2, 1000, 'forced spawn')
+  succeedWith(spawnImpl.calls[1].child, SAMPLE_REPORT)
+  await until(() => forced.writableEnded, 2000, 'forced response')
+  assert.equal(json(forced).cache, 'fresh')
+})
+
+test('force=0 reruns once the snapshot is older than the TTL', async () => {
+  const spawnImpl = makeSpawn(child => { succeedWith(child, SAMPLE_REPORT) })
+  // ttlMs = staleAfterHours * 3600_000, so a tiny value makes the snapshot stale fast.
+  const harness = boot({ spawn: spawnImpl, staleAfterHours: 0.000001 })
+  const headers = { host: '127.0.0.1', 'sec-fetch-site': 'same-origin' }
+  await request(harness.handler, makeReq({ method: 'POST', url: CHECK, headers }))
+  await new Promise(resolve => setTimeout(resolve, 20))
+
+  const res = makeRes()
+  harness.handler(makeReq({ method: 'POST', url: `${CHECK}?force=0`, headers }), res)
+  await until(() => spawnImpl.calls.length === 2, 1000, 'stale spawn')
+  succeedWith(spawnImpl.calls[1].child, SAMPLE_REPORT)
+  await until(() => res.writableEnded, 2000, 'stale response')
+  assert.equal(json(res).cache, 'fresh')
+})
+
+test('mode=fast passes --fast and records the mode on the snapshot', async () => {
+  const spawnImpl = makeSpawn(child => { succeedWith(child, SAMPLE_REPORT) })
+  const harness = boot({ spawn: spawnImpl })
+  const headers = { host: '127.0.0.1', 'sec-fetch-site': 'same-origin' }
+  const res = await request(harness.handler, makeReq({ method: 'POST', url: `${CHECK}?mode=fast`, headers }))
+  assert.deepEqual(spawnImpl.calls[0].args, [CHECK_PATH, '--json', '--fast', '--no-update'])
+  assert.equal(json(res).mode, 'fast')
+
+  const snapshot = json(await request(harness.handler, makeReq({ url: SNAPSHOT, headers })))
+  assert.equal(snapshot.snapshot.mode, 'fast')
+
+  // An unknown mode falls back to full (no new error code in v2.1).
+  const fallbackSpawn = makeSpawn(child => { succeedWith(child, SAMPLE_REPORT) })
+  const fallback = boot({ spawn: fallbackSpawn })
+  await request(fallback.handler, makeReq({ method: 'POST', url: `${CHECK}?mode=bogus`, headers }))
+  assert.deepEqual(fallbackSpawn.calls[0].args, [CHECK_PATH, '--json', '--no-update'])
 })
 
 /* -------------------------------------------------------- diagnosis failure */
@@ -583,7 +762,7 @@ test('non-zero exit becomes a structured 500 and logs to the host stderr seam', 
   }))
   assert.equal(res.statusCode, 500)
   assertJsonHeaders(res)
-  assert.deepEqual(json(res), { ok: false, error: 'exit-1' })
+  assertDiagnosisFailure(json(res), 'exit-1')
   assert.ok(logged.some(line => line.includes('exit-1')), `expected a logged failure, got ${JSON.stringify(logged)}`)
 
   // The single-flight guard must be released after a failure.
@@ -602,7 +781,7 @@ test('a signal-terminated child becomes a structured 500', async () => {
     headers: { host: '127.0.0.1', origin: 'http://127.0.0.1' },
   }))
   assert.equal(res.statusCode, 500)
-  assert.deepEqual(json(res), { ok: false, error: 'signal-SIGKILL' })
+  assertDiagnosisFailure(json(res), 'signal-SIGKILL')
 })
 
 test('invalid JSON stdout becomes a structured 500', async () => {
@@ -620,7 +799,7 @@ test('invalid JSON stdout becomes a structured 500', async () => {
       headers: { host: '127.0.0.1', origin: 'http://127.0.0.1' },
     }))
     assert.equal(res.statusCode, 500, JSON.stringify(stdout))
-    assert.deepEqual(json(res), { ok: false, error: 'invalid-json' })
+    assertDiagnosisFailure(json(res), 'invalid-json')
   }
 })
 
@@ -633,11 +812,17 @@ test('a diagnosis that never finishes times out: SIGTERM plus a 500', async () =
     headers: { host: '127.0.0.1', origin: 'http://127.0.0.1' },
   }))
   assert.equal(res.statusCode, 500)
-  assert.deepEqual(json(res), { ok: false, error: 'timeout' })
+  assertDiagnosisFailure(json(res), 'timeout')
   assert.deepEqual(spawnImpl.calls[0].child.killSignals, ['SIGTERM'])
 
-  // A late close after the timeout must not rewrite anything.
-  assert.equal(res.statusCode, 500)
+  // v2: busy only clears once the child really closed.
+  const stillRunning = await request(harness.handler, makeReq({
+    headers: { host: '127.0.0.1', 'sec-fetch-site': 'same-origin' },
+  }))
+  assert.equal(json(stillRunning).busy, true)
+
+  // A late close after the timeout must only release the inflight slot.
+  spawnImpl.calls[0].child.emit('close', null, 'SIGTERM')
   const health = await request(harness.handler, makeReq({
     headers: { host: '127.0.0.1', 'sec-fetch-site': 'same-origin' },
   }))
@@ -655,7 +840,7 @@ test('stdout over the cap is rejected and the child is terminated', async () => 
     headers: { host: '127.0.0.1', origin: 'http://127.0.0.1' },
   }))
   assert.equal(res.statusCode, 500)
-  assert.deepEqual(json(res), { ok: false, error: 'output-too-large' })
+  assertDiagnosisFailure(json(res), 'output-too-large')
   assert.deepEqual(spawnImpl.calls[0].child.killSignals, ['SIGTERM'])
 })
 
@@ -673,7 +858,7 @@ test('spawn failures become structured 500s instead of escaping the handler', as
       headers: { host: '127.0.0.1', origin: 'http://127.0.0.1' },
     }))
     assert.equal(res.statusCode, 500)
-    assert.deepEqual(json(res), { ok: false, error: 'spawn-error' })
+    assertDiagnosisFailure(json(res), 'spawn-error')
   }
 })
 
@@ -688,7 +873,7 @@ test("a child 'error' event becomes a structured 500", async () => {
     headers: { host: '127.0.0.1', origin: 'http://127.0.0.1' },
   }))
   assert.equal(res.statusCode, 500)
-  assert.deepEqual(json(res), { ok: false, error: 'spawn-error' })
+  assertDiagnosisFailure(json(res), 'spawn-error')
 })
 
 test('handler errors never escape as unhandled rejections', async () => {
@@ -767,7 +952,13 @@ test('real HTTP: health answers on loopback and refuses a marker-less or foreign
     assert.equal(allowed.status, 200)
     assert.equal(allowed.headers['content-type'], JSON_TYPE)
     assert.equal(allowed.headers['cache-control'], 'no-store')
-    assert.deepEqual(JSON.parse(allowed.body), { ok: true, version: PKG_VERSION, busy: false })
+    assert.deepEqual(JSON.parse(allowed.body), {
+      ok: true,
+      version: PKG_VERSION,
+      busy: false,
+      capabilities: { snapshot: true, history: true, cancel: true },
+      lastCheck: null,
+    })
 
     const head = await httpRequest(port, {
       method: 'HEAD',
@@ -823,7 +1014,7 @@ test('real HTTP: a failing subprocess becomes a 500 and frees the single-flight 
       headers: { host: `127.0.0.1:${port}`, 'sec-fetch-site': 'same-origin' },
     })
     assert.equal(res.status, 500)
-    assert.deepEqual(JSON.parse(res.body), { ok: false, error: 'exit-3' })
+    assertDiagnosisFailure(JSON.parse(res.body), 'exit-3')
 
     const health = await httpRequest(port, {
       url: HEALTH,
@@ -845,7 +1036,7 @@ test('real HTTP: a hung subprocess is SIGTERMed at the timeout', async () => {
       headers: { host: `127.0.0.1:${port}`, 'sec-fetch-site': 'same-origin' },
     })
     assert.equal(res.status, 500)
-    assert.deepEqual(JSON.parse(res.body), { ok: false, error: 'timeout' })
+    assertDiagnosisFailure(JSON.parse(res.body), 'timeout')
     const pid = spawnImpl.calls[0].child.pid
     assert.equal(await waitForExit(pid), true, `child ${pid} survived the SIGTERM`)
   } finally {
@@ -853,7 +1044,7 @@ test('real HTTP: a hung subprocess is SIGTERMed at the timeout', async () => {
   }
 })
 
-test('real HTTP: two concurrent checks yield 200 and 409', async () => {
+test('real HTTP: two concurrent checks share one run and both answer 200', async () => {
   const spawnImpl = realSpawn('setTimeout(() => { process.stdout.write("{}") }, 200)')
   const { port, close } = await startServer({ spawn: spawnImpl })
   try {
@@ -862,12 +1053,477 @@ test('real HTTP: two concurrent checks yield 200 and 409', async () => {
       httpRequest(port, { method: 'POST', url: CHECK, headers }),
       httpRequest(port, { method: 'POST', url: CHECK, headers }),
     ])
-    const statuses = [first.status, second.status].sort()
-    assert.deepEqual(statuses, [200, 409])
-    const busy = first.status === 409 ? first : second
-    assert.deepEqual(JSON.parse(busy.body), { ok: false, error: 'busy' })
+    assert.deepEqual([first.status, second.status].sort(), [200, 200])
+    const bodies = [first, second].map(res => JSON.parse(res.body))
+    assert.equal(bodies[0].checkedAt, bodies[1].checkedAt, 'both clients see the same result')
+    const caches = bodies.map(body => body.cache).sort()
+    assert.deepEqual(caches, ['attached', 'fresh'])
     assert.equal(spawnImpl.calls.length, 1)
   } finally {
     await close()
   }
+})
+
+test('real HTTP: cancel terminates the child and keeps busy until it closed', async () => {
+  const spawnImpl = realSpawn('process.on("SIGTERM", () => {}); setInterval(() => {}, 1000)')
+  const { port, close } = await startServer({ spawn: spawnImpl, killGraceMs: 50 })
+  try {
+    const headers = { host: `127.0.0.1:${port}`, 'sec-fetch-site': 'same-origin' }
+    const pending = httpRequest(port, { method: 'POST', url: CHECK, headers })
+    const deadline = Date.now() + 2000
+    while (spawnImpl.calls.length === 0 && Date.now() < deadline) {
+      await new Promise(resolve => setTimeout(resolve, 10))
+    }
+    assert.equal(spawnImpl.calls.length, 1)
+
+    const cancel = await httpRequest(port, { method: 'POST', url: CANCEL, headers })
+    assert.equal(cancel.status, 200)
+    assert.deepEqual(JSON.parse(cancel.body), { ok: true, cancelled: true })
+
+    const check = await pending
+    assert.equal(check.status, 500)
+    const cancelledBody = JSON.parse(check.body)
+    assert.equal(cancelledBody.ok, false)
+    assert.equal(cancelledBody.error, 'cancelled')
+    assert.equal(typeof cancelledBody.elapsedMs, 'number')
+
+    const pid = spawnImpl.calls[0].child.pid
+    assert.equal(await waitForExit(pid), true, `child ${pid} survived the SIGTERM/SIGKILL escalation`)
+
+    const status = await httpRequest(port, { url: STATUS, headers })
+    assert.equal(JSON.parse(status.body).busy, false)
+  } finally {
+    await close()
+  }
+})
+
+/* ------------------------------------------------------ v2: routes & shape */
+
+const V2_HEADERS = { host: '127.0.0.1', 'sec-fetch-site': 'same-origin' }
+
+/** Drive one POST /check request without awaiting the run's completion. */
+function startCheck(harness, url = CHECK, headers = V2_HEADERS) {
+  const res = makeRes()
+  harness.handler(makeReq({ method: 'POST', url, headers }), res)
+  return res
+}
+
+test('snapshot answers 200 with snapshot:null and the cache envelope before any run', async () => {
+  const harness = boot()
+  const res = await request(harness.handler, makeReq({ url: SNAPSHOT, headers: V2_HEADERS }))
+  assert.equal(res.statusCode, 200)
+  assertJsonHeaders(res)
+  assert.deepEqual(json(res), {
+    ok: true,
+    snapshot: null,
+    busy: false,
+    cache: { ttlMs: 12 * 60 * 60 * 1000, autoCheck: true },
+  })
+
+  const head = await request(harness.handler, makeReq({ method: 'HEAD', url: SNAPSHOT, headers: V2_HEADERS }))
+  assert.equal(head.statusCode, 200)
+  assertJsonHeaders(head)
+  assert.equal(head.body, undefined)
+})
+
+test('status answers an idle view before any run', async () => {
+  const harness = boot()
+  const res = await request(harness.handler, makeReq({ url: STATUS, headers: V2_HEADERS }))
+  assert.equal(res.statusCode, 200)
+  assertJsonHeaders(res)
+  assert.deepEqual(json(res), {
+    ok: true,
+    busy: false,
+    running: null,
+    lastCheck: null,
+    cache: { ttlMs: 12 * 60 * 60 * 1000 },
+  })
+})
+
+test('snapshot/status/history reflect one completed run and hide the report by default', async () => {
+  const spawnImpl = makeSpawn(child => { succeedWith(child, RICH_REPORT) })
+  const harness = boot({ spawn: spawnImpl })
+  const checkBody = json(await request(harness.handler, makeReq({ method: 'POST', url: CHECK, headers: V2_HEADERS })))
+
+  const snapshot = json(await request(harness.handler, makeReq({ url: SNAPSHOT, headers: V2_HEADERS })))
+  assert.equal(snapshot.ok, true)
+  assert.equal(snapshot.busy, false)
+  assert.equal(snapshot.snapshot.checkedAt, checkBody.checkedAt)
+  assert.equal(snapshot.snapshot.mode, 'full')
+  assert.equal(typeof snapshot.snapshot.elapsedMs, 'number')
+  assert.ok(snapshot.snapshot.ageMs >= 0)
+  assert.equal(snapshot.snapshot.stale, false)
+  assert.equal('report' in snapshot.snapshot, false)
+
+  const summary = snapshot.snapshot.summary
+  assert.equal(summary.toolCount, 2)
+  assert.equal(summary.depCount, 2)
+  assert.equal(summary.updateCount, 1)
+  assert.equal(summary.recommendedCount, 1)
+  assert.equal(summary.reviewCount, 0)
+  assert.equal(summary.unknownCount, 1)
+  assert.equal(summary.conflictCount, 1)
+  assert.equal(summary.uncertainCount, 1)
+  assert.equal(summary.generatedAt, RICH_REPORT.generated_at)
+  assert.equal(summary.checkedAt, checkBody.checkedAt)
+  assert.equal(summary.mode, 'full')
+  assert.equal(summary.stale, false)
+  assert.ok(Buffer.byteLength(JSON.stringify(summary)) <= 1024, 'summary must stay <= 1 KB')
+
+  const full = json(await request(harness.handler, makeReq({ url: `${SNAPSHOT}?full=1`, headers: V2_HEADERS })))
+  assert.deepEqual(full.snapshot.report, RICH_REPORT)
+
+  const status = json(await request(harness.handler, makeReq({ url: STATUS, headers: V2_HEADERS })))
+  assert.equal(status.busy, false)
+  assert.equal(status.running, null)
+  assert.equal(status.lastCheck.checkedAt, checkBody.checkedAt)
+  assert.equal(status.lastCheck.mode, 'full')
+  assert.ok(status.lastCheck.ageMs >= 0)
+
+  const history = json(await request(harness.handler, makeReq({ url: HISTORY, headers: V2_HEADERS })))
+  assert.equal(history.ok, true)
+  assert.equal(history.entries.length, 1)
+  assert.equal(history.entries[0].checkedAt, checkBody.checkedAt)
+  assert.equal(history.entries[0].mode, 'full')
+  assert.equal(typeof history.entries[0].elapsedMs, 'number')
+  assert.equal(history.entries[0].summary.toolCount, 2)
+})
+
+test('history is newest-first and respects keepHistory plus the limit parameter', async () => {
+  const spawnImpl = makeSpawn(child => { succeedWith(child, SAMPLE_REPORT) })
+  const harness = boot({ spawn: spawnImpl, keepHistory: 2 })
+  for (let index = 0; index < 3; index += 1) {
+    const res = startCheck(harness)
+    await until(() => spawnImpl.calls.length === index + 1, 1000, `spawn ${index + 1}`)
+    succeedWith(spawnImpl.calls[index].child, SAMPLE_REPORT)
+    await until(() => res.writableEnded, 2000, `check ${index + 1}`)
+  }
+
+  const entries = json(await request(harness.handler, makeReq({ url: HISTORY, headers: V2_HEADERS }))).entries
+  assert.equal(entries.length, 2, 'keepHistory bounds the stored history')
+  const timestamps = entries.map(entry => Date.parse(entry.checkedAt))
+  assert.ok(timestamps[0] >= timestamps[1], 'newest entry first')
+
+  const limited = json(await request(harness.handler, makeReq({ url: `${HISTORY}?limit=1`, headers: V2_HEADERS })))
+  assert.equal(limited.entries.length, 1)
+  const huge = json(await request(harness.handler, makeReq({ url: `${HISTORY}?limit=500`, headers: V2_HEADERS })))
+  assert.equal(huge.entries.length, 2)
+})
+
+test('status exposes the in-flight run, its mode and waiter count', async () => {
+  const spawnImpl = makeSpawn()
+  const harness = boot({ spawn: spawnImpl })
+  const first = startCheck(harness, `${CHECK}?mode=fast`)
+  startCheck(harness)
+  await until(() => spawnImpl.calls.length === 1, 1000, 'spawn')
+
+  const status = json(await request(harness.handler, makeReq({ url: STATUS, headers: V2_HEADERS })))
+  assert.equal(status.busy, true)
+  assert.equal(status.running.mode, 'fast', 'the second request attaches to the in-flight mode')
+  assert.equal(status.running.waiters, 2)
+  assert.equal(typeof status.running.startedAt, 'string')
+  assert.ok(status.running.elapsedMs >= 0)
+
+  succeedWith(spawnImpl.calls[0].child, SAMPLE_REPORT)
+  await until(() => first.writableEnded, 2000, 'responses')
+})
+
+test('v2 routes keep the v1 405/404 semantics', async () => {
+  const harness = boot()
+  const cases = [
+    ['POST', SNAPSHOT],
+    ['POST', STATUS],
+    ['POST', HISTORY],
+    ['GET', CANCEL],
+    ['HEAD', CANCEL],
+  ]
+  for (const [method, url] of cases) {
+    const res = await request(harness.handler, makeReq({ method, url, headers: V2_HEADERS }))
+    assert.equal(res.statusCode, 405, `${method} ${url}`)
+    assert.deepEqual(json(res), { ok: false, error: 'method' })
+  }
+  for (const url of ['/api/cli-doctor/snapshot/x', '/api/cli-doctor/check/cancel/x', '/api/cli-doctor/status/']) {
+    const res = await request(harness.handler, makeReq({ url, headers: V2_HEADERS }))
+    assert.equal(res.statusCode, 404, url)
+    assert.deepEqual(json(res), { ok: false, error: 'not-found' })
+  }
+})
+
+test('v2 routes sit behind the same loopback fence', async () => {
+  for (const [method, url] of [['GET', SNAPSHOT], ['GET', STATUS], ['GET', HISTORY], ['POST', CANCEL]]) {
+    const spawnImpl = makeSpawn()
+    const harness = boot({ spawn: spawnImpl })
+    const res = await request(harness.handler, makeReq({ method, url }))
+    assert.equal(res.statusCode, 403, `${method} ${url}`)
+    assert.deepEqual(json(res), { ok: false, error: 'forbidden' })
+    assert.equal(spawnImpl.calls.length, 0)
+  }
+})
+
+/* --------------------------------------------------- v2: cancel & disposal */
+
+test('cancel settles waiters with 500 cancelled and keeps busy until the child closed', async () => {
+  const spawnImpl = makeSpawn()
+  const harness = boot({ spawn: spawnImpl })
+  const pending = startCheck(harness)
+  await until(() => spawnImpl.calls.length === 1, 1000, 'spawn')
+
+  const cancel = json(await request(harness.handler, makeReq({ method: 'POST', url: CANCEL, headers: V2_HEADERS })))
+  assert.deepEqual(cancel, { ok: true, cancelled: true })
+  await until(() => pending.writableEnded, 1000, 'cancelled response')
+  assert.equal(pending.statusCode, 500)
+  const cancelledWaiter = json(pending)
+  assert.equal(cancelledWaiter.ok, false)
+  assert.equal(cancelledWaiter.error, 'cancelled')
+  assert.equal(typeof cancelledWaiter.elapsedMs, 'number')
+  assert.deepEqual(spawnImpl.calls[0].child.killSignals, ['SIGTERM'])
+
+  const stillBusy = json(await request(harness.handler, makeReq({ url: STATUS, headers: V2_HEADERS })))
+  assert.equal(stillBusy.busy, true, 'busy clears only after the child really closed')
+
+  spawnImpl.calls[0].child.emit('close', null, 'SIGTERM')
+  const idle = json(await request(harness.handler, makeReq({ url: STATUS, headers: V2_HEADERS })))
+  assert.equal(idle.busy, false)
+  assert.equal(idle.lastCheck, null, 'a cancelled run must not create a snapshot')
+
+  const again = json(await request(harness.handler, makeReq({ method: 'POST', url: CANCEL, headers: V2_HEADERS })))
+  assert.deepEqual(again, { ok: true, cancelled: false })
+})
+
+test('fiber disposal settles in-flight waiters before terminating the child', async () => {
+  const spawnImpl = makeSpawn()
+  const harness = boot({ spawn: spawnImpl })
+  const pending = startCheck(harness)
+  await until(() => spawnImpl.calls.length === 1, 1000, 'spawn')
+
+  harness.disposeFiber()
+  await until(() => pending.writableEnded, 1000, 'disposed waiter')
+  assert.equal(pending.statusCode, 500)
+  const disposedWaiter = json(pending)
+  assert.equal(disposedWaiter.ok, false)
+  assert.equal(disposedWaiter.error, 'cancelled')
+  assert.equal(typeof disposedWaiter.elapsedMs, 'number')
+  assert.deepEqual(spawnImpl.calls[0].child.killSignals, ['SIGTERM'])
+})
+
+test('a response closing early leaves the run alive and caches its result', async () => {
+  const abortable = () => {
+    const res = makeRes()
+    const closeHandlers = []
+    res.once = (name, handler) => { if (name === 'close') closeHandlers.push(handler) }
+    res.closeHandlers = closeHandlers
+    return res
+  }
+  const spawnImpl = makeSpawn(child => { succeedWith(child, SAMPLE_REPORT) })
+  const harness = boot({ spawn: spawnImpl })
+
+  const first = abortable()
+  harness.handler(makeReq({ method: 'POST', url: CHECK, headers: V2_HEADERS }), first)
+  await until(() => spawnImpl.calls.length === 1, 1000, 'spawn')
+  const second = abortable()
+  harness.handler(makeReq({ method: 'POST', url: CHECK, headers: V2_HEADERS }), second)
+  assert.equal(first.closeHandlers.length, 1)
+  assert.equal(second.closeHandlers.length, 1)
+  assert.equal(json(await request(harness.handler, makeReq({ url: STATUS, headers: V2_HEADERS }))).running.waiters, 2)
+
+  // The first browser aborts: the run keeps going and the second client still
+  // receives the shared result.
+  first.closeHandlers[0]()
+  assert.equal(json(await request(harness.handler, makeReq({ url: STATUS, headers: V2_HEADERS }))).running.waiters, 1)
+  succeedWith(spawnImpl.calls[0].child, SAMPLE_REPORT)
+  await until(() => second.writableEnded, 2000, 'shared response')
+  assert.equal(json(second).checkedAt, json(second).checkedAt)
+
+  const snapshot = json(await request(harness.handler, makeReq({ url: SNAPSHOT, headers: V2_HEADERS })))
+  assert.equal(snapshot.snapshot.checkedAt, json(second).checkedAt, 'the completed run is cached for later clients')
+  const hit = json(await request(harness.handler, makeReq({ method: 'POST', url: `${CHECK}?force=0`, headers: V2_HEADERS })))
+  assert.equal(hit.cache, 'hit')
+})
+
+/* ------------------------------------------------------- v2: persistence */
+
+test('state persists to dataDir and reloads snapshot + history in a new instance', async (t) => {
+  const dataDir = makeTempDataDir(t)
+  const spawnImpl = makeSpawn(child => { succeedWith(child, RICH_REPORT) })
+  const harness = boot({ spawn: spawnImpl, persist: true, dataDir })
+  const checkedAt = json(await request(harness.handler, makeReq({ method: 'POST', url: CHECK, headers: V2_HEADERS }))).checkedAt
+
+  const statePath = path.join(dataDir, 'state.json')
+  const raw = JSON.parse(readFileSync(statePath, 'utf8'))
+  assert.equal(raw.schemaVersion, 1)
+  assert.equal(raw.snapshot.checkedAt, checkedAt)
+  assert.equal(raw.snapshot.mode, 'full')
+  assert.equal(typeof raw.snapshot.elapsedMs, 'number')
+  assert.deepEqual(raw.snapshot.report, RICH_REPORT)
+  assert.equal(raw.history.length, 1)
+  assert.equal(raw.history[0].checkedAt, checkedAt)
+  assert.equal(raw.history[0].summary.toolCount, 2)
+  if (process.platform !== 'win32') {
+    assert.equal(statSync(statePath).mode & 0o777, 0o600)
+    assert.equal(statSync(dataDir).mode & 0o777, 0o700)
+  }
+
+  const reloaded = boot({ dataDir, persist: true })
+  const snapshot = json(await request(reloaded.handler, makeReq({ url: `${SNAPSHOT}?full=1`, headers: V2_HEADERS })))
+  assert.equal(snapshot.snapshot.checkedAt, checkedAt)
+  assert.deepEqual(snapshot.snapshot.report, RICH_REPORT)
+  assert.equal(snapshot.snapshot.summary.toolCount, 2)
+  const health = json(await request(reloaded.handler, makeReq({ url: HEALTH, headers: V2_HEADERS })))
+  assert.equal(health.lastCheck.checkedAt, checkedAt)
+  const history = json(await request(reloaded.handler, makeReq({ url: HISTORY, headers: V2_HEADERS })))
+  assert.equal(history.entries.length, 1)
+
+  const hit = json(await request(reloaded.handler, makeReq({ method: 'POST', url: `${CHECK}?force=0`, headers: V2_HEADERS })))
+  assert.equal(hit.cache, 'hit', 'a reloaded snapshot serves force=0 from disk')
+})
+
+test('the default dataDir follows DSH_HOME/storages/cli-doctor', async (t) => {
+  const home = makeTempDataDir(t)
+  const saved = process.env.DSH_HOME
+  try {
+    process.env.DSH_HOME = home
+    const spawnImpl = makeSpawn(child => { succeedWith(child, SAMPLE_REPORT) })
+    const harness = boot({ spawn: spawnImpl, persist: true })
+    await request(harness.handler, makeReq({ method: 'POST', url: CHECK, headers: V2_HEADERS }))
+    assert.equal(statSync(path.join(home, 'storages', 'cli-doctor', 'state.json')).isFile(), true)
+  } finally {
+    if (saved === undefined) delete process.env.DSH_HOME
+    else process.env.DSH_HOME = saved
+  }
+})
+
+test('corrupt or unsupported state files are ignored without crashing', async (t) => {
+  const invalidStates = [
+    '{not json at all',
+    '[]',
+    JSON.stringify({ schemaVersion: 99, snapshot: null, history: [] }),
+    JSON.stringify({ schemaVersion: 1, snapshot: { checkedAt: 'not-a-date' }, history: 'nope' }),
+  ]
+  for (const content of invalidStates) {
+    const dataDir = makeTempDataDir(t)
+    writeFileSync(path.join(dataDir, 'state.json'), content)
+    const harness = boot({ dataDir, persist: true })
+    const snapshot = json(await request(harness.handler, makeReq({ url: SNAPSHOT, headers: V2_HEADERS })))
+    assert.equal(snapshot.snapshot, null, content)
+    assert.equal(snapshot.ok, true)
+  }
+})
+
+test('persistence write failures are logged and never fail a diagnosis', async (t) => {
+  const root = makeTempDataDir(t)
+  const blocker = path.join(root, 'blocker')
+  writeFileSync(blocker, 'x')
+  const logged = []
+  const spawnImpl = makeSpawn(child => { succeedWith(child, SAMPLE_REPORT) })
+  const harness = boot({
+    spawn: spawnImpl,
+    persist: true,
+    dataDir: path.join(blocker, 'nested'),
+    logger: message => logged.push(message),
+  })
+  const res = await request(harness.handler, makeReq({ method: 'POST', url: CHECK, headers: V2_HEADERS }))
+  assert.equal(res.statusCode, 200)
+  assert.equal(json(res).ok, true)
+  assert.ok(logged.some(line => line.includes('state persistence failed')), JSON.stringify(logged))
+})
+
+test('apply loads a large persisted state well under the 50 ms budget', async (t) => {
+  const dataDir = makeTempDataDir(t)
+  const tools = Array.from({ length: 800 }, (_, index) => ({
+    name: `tool-${index}`,
+    current: '1.0.0',
+    latest: '1.1.0',
+    outdated: true,
+    impact: { checked: true, dependents: [], indirect: [], conflicts: [], uncertain: [] },
+  }))
+  const report = { generated_at: '2026-01-01T00:00:00Z', managers: { homebrew: { tools, deps: [] } } }
+  writeFileSync(path.join(dataDir, 'state.json'), JSON.stringify({
+    schemaVersion: 1,
+    snapshot: { report, checkedAt: new Date().toISOString(), mode: 'full', elapsedMs: 1 },
+    history: [],
+  }))
+  const started = Date.now()
+  const harness = boot({ dataDir, persist: true })
+  const elapsed = Date.now() - started
+  assert.ok(elapsed < 50, `apply blocked for ${elapsed} ms`)
+  const snapshot = json(await request(harness.handler, makeReq({ url: SNAPSHOT, headers: V2_HEADERS })))
+  assert.equal(snapshot.snapshot.summary.toolCount, 800)
+})
+
+/* --------------------------------------------------- v2: TTL & env seams */
+
+test('summary stale follows the TTL while history keeps its capture-time summary', async () => {
+  const spawnImpl = makeSpawn(child => { succeedWith(child, SAMPLE_REPORT) })
+  const harness = boot({ spawn: spawnImpl, staleAfterHours: 0.000001 })
+  await request(harness.handler, makeReq({ method: 'POST', url: CHECK, headers: V2_HEADERS }))
+  await new Promise(resolve => setTimeout(resolve, 20))
+
+  const snapshot = json(await request(harness.handler, makeReq({ url: SNAPSHOT, headers: V2_HEADERS })))
+  assert.equal(snapshot.snapshot.stale, true)
+  assert.equal(snapshot.snapshot.summary.stale, true)
+  assert.ok(snapshot.snapshot.ageMs >= 0)
+
+  const history = json(await request(harness.handler, makeReq({ url: HISTORY, headers: V2_HEADERS })))
+  assert.equal(history.entries[0].summary.stale, false, 'history records the summary captured at run time')
+})
+
+test('CLI_DOCTOR_AUTO_CHECK overrides config and surfaces in the cache envelope', async () => {
+  const saved = process.env.CLI_DOCTOR_AUTO_CHECK
+  try {
+    process.env.CLI_DOCTOR_AUTO_CHECK = '0'
+    const off = boot()
+    assert.equal(json(await request(off.handler, makeReq({ url: SNAPSHOT, headers: V2_HEADERS }))).cache.autoCheck, false)
+
+    process.env.CLI_DOCTOR_AUTO_CHECK = '1'
+    const on = boot({ autoCheck: false })
+    assert.equal(json(await request(on.handler, makeReq({ url: SNAPSHOT, headers: V2_HEADERS }))).cache.autoCheck, true)
+  } finally {
+    if (saved === undefined) delete process.env.CLI_DOCTOR_AUTO_CHECK
+    else process.env.CLI_DOCTOR_AUTO_CHECK = saved
+  }
+})
+
+test('spawn env hygiene never overrides explicit user values', async () => {
+  const savedAutoUpdate = process.env.HOMEBREW_NO_AUTO_UPDATE
+  const savedNoColor = process.env.NO_COLOR
+  try {
+    process.env.HOMEBREW_NO_AUTO_UPDATE = 'user-wins'
+    delete process.env.NO_COLOR
+    const spawnImpl = makeSpawn(child => { succeedWith(child, SAMPLE_REPORT) })
+    const harness = boot({ spawn: spawnImpl })
+    await request(harness.handler, makeReq({ method: 'POST', url: CHECK, headers: V2_HEADERS }))
+    const env = spawnImpl.calls[0].opts.env
+    assert.equal(env.HOMEBREW_NO_AUTO_UPDATE, 'user-wins')
+    assert.equal(env.HOMEBREW_NO_ANALYTICS, '1')
+    assert.equal(env.PIP_DISABLE_PIP_VERSION_CHECK, '1')
+    assert.equal(env.NO_COLOR, '1')
+  } finally {
+    if (savedAutoUpdate === undefined) delete process.env.HOMEBREW_NO_AUTO_UPDATE
+    else process.env.HOMEBREW_NO_AUTO_UPDATE = savedAutoUpdate
+    if (savedNoColor === undefined) delete process.env.NO_COLOR
+    else process.env.NO_COLOR = savedNoColor
+  }
+})
+
+test('/history defaults to 20 entries and clamps the limit to 100', async (t) => {
+  const dataDir = makeTempDataDir(t)
+  const summary = {
+    toolCount: 1, depCount: 0, updateCount: 0, recommendedCount: 0, reviewCount: 0,
+    unknownCount: 0, conflictCount: 0, uncertainCount: 0,
+    generatedAt: null, checkedAt: '2026-01-01T00:00:00Z', mode: 'full', stale: false,
+  }
+  const entries = Array.from({ length: 22 }, (_, index) => ({
+    checkedAt: new Date(Date.UTC(2026, 0, 1, 0, index)).toISOString(),
+    mode: 'full',
+    elapsedMs: index,
+    summary: { ...summary, checkedAt: new Date(Date.UTC(2026, 0, 1, 0, index)).toISOString() },
+  }))
+  writeFileSync(path.join(dataDir, 'state.json'), JSON.stringify({
+    schemaVersion: 1, snapshot: null, history: entries,
+  }))
+  const harness = boot({ dataDir, persist: true, keepHistory: 30 })
+  const defaultPage = json(await request(harness.handler, makeReq({ url: HISTORY, headers: V2_HEADERS })))
+  assert.equal(defaultPage.entries.length, 20, 'the /history default limit is 20')
+  const capped = json(await request(harness.handler, makeReq({ url: `${HISTORY}?limit=500`, headers: V2_HEADERS })))
+  assert.equal(capped.entries.length, 22, 'the clamp cannot exceed what is stored')
 })

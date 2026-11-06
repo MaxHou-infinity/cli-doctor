@@ -7,6 +7,11 @@
 # Requires Google Chrome (or CHROME_BIN). Uses a throwaway Chrome profile under
 # /tmp; the user's browser profile is never touched. If no Chrome is present the
 # stage reports UNVERIFIED instead of failing.
+#
+# CONTRACT v2: the server is booted with CLI_DOCTOR_AUTO_CHECK=0 so the panel's
+# stale-gate auto check cannot start a competing 70 s diagnosis while the probe
+# measures layout. The probe prefers the snapshot restored from the Host cache
+# (normally written by the e2e-api stage) and only clicks 诊断 when it is empty.
 
 . "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/lib.sh"
 
@@ -44,7 +49,9 @@ say "chrome: $CHROME_BIN"
 say "port  : $PORT"
 
 export npm_config_store_dir="${npm_config_store_dir:-$REPO_ROOT/.pnpm-store}"
-"$DSH_BIN" --profile "$PROFILE" --port "$PORT" --no-open >"$LOGDIR/browser-server.log" 2>&1 &
+say "auto check: disabled for this stage (CLI_DOCTOR_AUTO_CHECK=0)"
+env CLI_DOCTOR_AUTO_CHECK=0 "$DSH_BIN" --profile "$PROFILE" --port "$PORT" --no-open \
+  >"$LOGDIR/browser-server.log" 2>&1 &
 SERVER_PID=$!
 say "server pid=$SERVER_PID"
 

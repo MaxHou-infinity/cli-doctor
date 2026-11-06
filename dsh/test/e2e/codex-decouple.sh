@@ -3,7 +3,9 @@
 #
 #   bash dsh/test/e2e/codex-decouple.sh
 #
-# Asserts that the DSH work touched nothing on the Codex adapter path, that the
+# Asserts that the DSH work touched nothing on the Codex adapter path (the only
+# allowed exception is the unified-version line in plugin.json / SKILL.md /
+# root package.json, checked in §2), that the
 # Codex smoke test still passes, that the vendored diagnosis scripts are
 # byte-identical to their sources, and that the DSH halves are self-contained
 # (no import of @deepseek-ai runtime values, no reference to dashboard/**).
@@ -11,7 +13,12 @@
 . "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/lib.sh"
 
 # Every path CONTRACT §0 forbids touching, relative to the repository root.
+# The unified-version release convention bumps plugin.json / SKILL.md / root
+# package.json, so those three may change **only** on their version line;
+# everything else must stay untouched and is guarded strictly below.
 PROTECTED="plugin.json mcp.json codex-server.js codex-bridge.js dashboard .agents SKILL.md bin package.json test"
+STRICT_PROTECTED="mcp.json codex-server.js codex-bridge.js dashboard .agents bin test"
+VERSION_MANIFESTS="plugin.json SKILL.md package.json"
 
 hdr "Codex decoupling"
 say "repo: $REPO_ROOT"
@@ -38,23 +45,52 @@ VIOLATIONS="$(node -e '
     }
   }
   process.stdout.write(hits.join("\n"));
-' "$PROTECTED" "$LOGDIR/git-status.txt")"
+' "$STRICT_PROTECTED" "$LOGDIR/git-status.txt")"
 
 if [ -z "$VIOLATIONS" ]; then
-  ok "no protected Codex path appears in git status"
+  ok "no strictly-protected Codex path appears in git status"
 else
-  bad "protected Codex paths were modified:"
+  bad "strictly-protected Codex paths were modified:"
   say "$VIOLATIONS"
 fi
 
 hdr "2. tracked diffs against protected paths"
-git -C "$REPO_ROOT" diff --name-only -- $PROTECTED >"$LOGDIR/git-diff-protected.txt" 2>&1
-if [ -s "$LOGDIR/git-diff-protected.txt" ]; then
-  bad "tracked modifications inside protected paths:"
-  cat "$LOGDIR/git-diff-protected.txt"
+# Strict paths: any tracked change is a violation.
+git -C "$REPO_ROOT" diff --name-only -- $STRICT_PROTECTED >"$LOGDIR/git-diff-strict.txt" 2>&1
+if [ -s "$LOGDIR/git-diff-strict.txt" ]; then
+  bad "tracked modifications inside strictly-protected paths:"
+  cat "$LOGDIR/git-diff-strict.txt"
 else
-  ok "no tracked modification inside protected paths"
+  ok "no tracked modification inside strictly-protected paths"
 fi
+
+# Version manifests: only the version line may differ, and the new version must
+# equal the root package.json version (the repo's unified-version convention).
+ROOT_VERSION="$(node -e 'process.stdout.write(String(JSON.parse(require("node:fs").readFileSync(process.argv[1], "utf8")).version || ""))' "$REPO_ROOT/package.json")"
+say "unified version: $ROOT_VERSION"
+for f in $VERSION_MANIFESTS; do
+  if git -C "$REPO_ROOT" diff --quiet -- "$f"; then
+    ok "$f unchanged"
+    continue
+  fi
+  SAFE_NAME="$(echo "$f" | tr '/' '-')"
+  git -C "$REPO_ROOT" diff -U0 -- "$f" >"$LOGDIR/diff-$SAFE_NAME.txt" 2>&1
+  NON_VERSION="$(grep -E '^[+-][^+-]' "$LOGDIR/diff-$SAFE_NAME.txt" | grep -viE 'version' || true)"
+  FILE_VERSION="$(node -e '
+    const fs = require("node:fs");
+    const text = fs.readFileSync(process.argv[1], "utf8");
+    const m = text.match(/"?version"?\s*[:=]\s*"([^"]+)"/);
+    process.stdout.write(m ? m[1] : "");
+  ' "$REPO_ROOT/$f")"
+  if [ -n "$NON_VERSION" ]; then
+    bad "$f changed beyond its version line:"
+    say "$NON_VERSION"
+  elif [ "$FILE_VERSION" != "$ROOT_VERSION" ]; then
+    bad "$f version ($FILE_VERSION) != root version ($ROOT_VERSION)"
+  else
+    ok "$f diff is version-only and matches $ROOT_VERSION"
+  fi
+done
 
 hdr "3. Codex smoke test"
 ( cd "$REPO_ROOT" && node test/codex_plugin_smoke.js ) >"$LOGDIR/codex-smoke.log" 2>&1

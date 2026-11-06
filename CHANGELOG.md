@@ -1,6 +1,20 @@
 # CLI Doctor 更新记录
 
-从 0.2.0 起，Agent Skill、CLI 和 Codex 侧栏插件采用同一版本号，分别记录在 `SKILL.md`、`package.json` 和 `plugin.json` 中。DSH 侧栏插件（`dsh/`）同样按 0.2.0 发布。
+从 0.2.0 起，Agent Skill、CLI 和 Codex 侧栏插件采用同一版本号，分别记录在 `SKILL.md`、`package.json` 和 `plugin.json` 中。DSH 侧栏插件（`dsh/`）同样按仓库统一版本号发布。
+
+## 0.3.0
+
+DSH 侧栏插件（`dsh/`）升级到工程契约 v2：从"一次性报告页"升级为"常驻诊断中枢"。CLI 与 Codex 侧栏插件的行为不变，仅随仓库统一版本号。
+
+- **诊断状态常驻**：Host 新增结果快照、历史摘要与落盘持久化（`<DSH_HOME>/storages/cli-doctor/state.json`，tmp + fsync + rename 原子写），重启/切页后面板可立即恢复上次结果（保留诊断状态）。
+- **过期自动检查**：打开面板时若没有快照或快照超过 `staleAfterHours`（默认 12 小时），自动执行一次可取消的完整诊断；环境变量 `CLI_DOCTOR_AUTO_CHECK=0` 可关闭。
+- **并发请求共享同一次运行**：不再返回 409；并发/多客户端请求 attach 到同一次诊断，拿到同一份结果，同一时刻只 spawn 一个检查器子进程。
+- **可取消**：新增 `POST /api/cli-doctor/check/cancel`，终止走进程组 SIGTERM → 5 秒后 SIGKILL；取消不会覆盖已有快照，`busy` 在子进程真正退出后才复位。
+- **新路由**：`GET /snapshot[?full=1]`、`GET /status`、`GET /history`；`POST /check` 支持 `mode=fast|full` 与 `force=0` 缓存命中；`/health` 增加 `capabilities` 与 `lastCheck`；失败响应附带 `detail` 与 `elapsedMs`。
+- **一键复制诊断报告**：面板可复制 AI 友好的 Markdown 报告（基本信息、汇总计数、按生态的可行动工具明细与升级命令、依赖冲突/待核验、已是最新列表、只读说明、数据来源）或原始 JSON；剪贴板不可用/被拒绝时降级为面板内只读文本框手动复制。
+- **汇总卡片即时筛选**：顶部 5 个计数卡片可点击筛选下方工具列表，再次点击同卡、点「清除筛选」或点「已发现工具」均可恢复；筛选时依赖层隐藏并给出说明，筛选状态跨切页保留，且筛选判定与计数复用同一纯函数。
+- **依赖语义与主题修正**：依赖条目不再同时显示「有可用更新 + 无法判断」；新增依赖冲突/待核验统计；状态色改用 DSH 主题 token，修正 aria-live / aria-busy 与相对时间/过期提示。
+- **工程**：契约升级到 v2（`dsh/CONTRACT.md`）；单元测试 76 → 143；e2e 9 阶段 788 条断言（desktop 运行时 0.2.2-rc.1 + PATH dsh 0.2.1-rc.5）；只读边界保持不变（不执行升级、不提供"交给 Agent 执行"入口）。
 
 ## 0.2.0
 

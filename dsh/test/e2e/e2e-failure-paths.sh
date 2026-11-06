@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# End-to-end verification of the Host failure semantics (CONTRACT §2.5).
+# End-to-end verification of the Host failure semantics (CONTRACT §2.5 / §v2.1).
 #
 #   bash dsh/test/e2e/e2e-failure-paths.sh [--port N]
 #
@@ -10,9 +10,10 @@
 # surface as a structured 500 — never as the webserver's generic 400, never as
 # an unhandled rejection.
 #
-# The 8-minute timeout branch is NOT covered here: reproducing it would take
-# eight minutes of wall clock. It is covered by the author's unit tests through
-# the injected timeout seam, and is reported as unverified by this script.
+# The contract-timeout branch is NOT covered here: reproducing it would take the
+# whole checkTimeoutMs wall clock (900 000 ms by default since CONTRACT v2.2).
+# It is covered by the author's unit tests through the injected timeout seam and
+# is reported as unverified by this script.
 
 . "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/lib.sh"
 
@@ -39,7 +40,7 @@ cleanup() {
 }
 trap cleanup EXIT INT TERM
 
-hdr "Host failure paths (CONTRACT §2.5)"
+hdr "Host failure paths (CONTRACT §2.5 / v2)"
 say "stub dir: $STUB_DIR  port: $PORT"
 
 # ---- stubs ----------------------------------------------------------------
@@ -85,12 +86,19 @@ else
   exit 1
 fi
 
+# CONTRACT v2.1: a failed run must never replace the persisted snapshot, so the
+# failure matrix records the cache state restored from disk before any failure.
+CODE="$(req snapshot-prefailure GET /api/cli-doctor/snapshot -H 'sec-fetch-site: same-origin')"
+assert_eq "snapshot before failures status" "200" "$CODE"
+
 hdr "1. checker exits non-zero -> 500 exit-1"
 CODE="$(req fail-exit1 POST /api/cli-doctor/check -H 'sec-fetch-site: same-origin')"
 say "  body: $(cat "$LOGDIR/fail-exit1.body")"
 assert_eq "exit-1 status" "500" "$CODE"
 assert_json "exit-1 error code" "$LOGDIR/fail-exit1.body" "error" "exit-1"
 assert_json "exit-1 ok flag" "$LOGDIR/fail-exit1.body" "ok" "false"
+assert_contains "exit-1 carries the v2 elapsedMs field" "elapsedMs" "$LOGDIR/fail-exit1.body"
+assert_contains "exit-1 carries the stderr tail as detail" "stub: deliberate failure" "$LOGDIR/fail-exit1.body"
 
 CODE="$(req fail-exit1-health GET /api/cli-doctor/health -H 'sec-fetch-site: same-origin')"
 assert_eq "server survives the failed diagnosis" "200" "$CODE"
@@ -103,6 +111,7 @@ if boot_with_stub "$STUB_DIR/notjson.js"; then
   say "  body: $(cat "$LOGDIR/fail-notjson.body")"
   assert_eq "invalid-json status" "500" "$CODE"
   assert_json "invalid-json error code" "$LOGDIR/fail-notjson.body" "error" "invalid-json"
+  assert_contains "invalid-json carries the v2 elapsedMs field" "elapsedMs" "$LOGDIR/fail-notjson.body"
 else
   bad "server did not boot with the non-JSON stub"
 fi
@@ -114,14 +123,25 @@ if boot_with_stub "$STUB_DIR/oversize.js"; then
   say "  body: $(cat "$LOGDIR/fail-oversize.body")"
   assert_eq "output-too-large status" "500" "$CODE"
   assert_json "output-too-large error code" "$LOGDIR/fail-oversize.body" "error" "output-too-large"
+  assert_contains "output-too-large carries the v2 elapsedMs field" "elapsedMs" "$LOGDIR/fail-oversize.body"
 else
   bad "server did not boot with the oversize stub"
 fi
 
-hdr "4. timeout branch"
-skip "8-minute timeout path not reproduced end-to-end (would cost 8 minutes); covered by the injected-timeout unit test"
+hdr "4. failed runs do not clobber the persisted snapshot"
+CODE="$(req snapshot-postfailure GET /api/cli-doctor/snapshot -H 'sec-fetch-site: same-origin')"
+assert_eq "snapshot endpoint after failures status" "200" "$CODE"
+SNAPSHOT_PREFAILURE="$(json_get "$LOGDIR/snapshot-prefailure.body" "snapshot.checkedAt" 2>/dev/null)"
+SNAPSHOT_POSTFAILURE="$(json_get "$LOGDIR/snapshot-postfailure.body" "snapshot.checkedAt" 2>/dev/null)"
+assert_eq "the snapshot is unchanged by failed runs" "${SNAPSHOT_PREFAILURE:-}" "${SNAPSHOT_POSTFAILURE:-}"
+CODE="$(req status-postfailure GET /api/cli-doctor/status -H 'sec-fetch-site: same-origin')"
+assert_eq "status after failures status" "200" "$CODE"
+assert_json "busy is released after all failures" "$LOGDIR/status-postfailure.body" "busy" "false"
 
-hdr "5. host log hygiene"
+hdr "5. timeout branch"
+skip "checkTimeoutMs timeout path not reproduced end-to-end (would cost the whole 15-minute budget); covered by the injected-timeout unit test"
+
+hdr "6. host log hygiene"
 for LOG in "$LOGDIR"/server-*.log; do
   say "--- $LOG ---"
   tail -6 "$LOG"

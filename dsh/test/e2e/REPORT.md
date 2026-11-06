@@ -1,7 +1,12 @@
 # cli-doctor DSH 插件：独立验证报告（verifier / task-3 + task-6）
 
 - 验证对象：`dsh/`（Host 半体、Client 半体、构建脚本、vendored `bin/**`）
-- 运行环境：macOS，Node v26.8.1，真实 CLI `dsh 0.2.0-rc.2`（`/opt/homebrew/bin/dsh`）
+- 运行环境（v1 历史轮次）：macOS，Node v26.8.1，真实 CLI `dsh 0.2.0-rc.2`（`/opt/homebrew/bin/dsh`）
+- 运行环境（v2 当前）：PATH `dsh 0.2.1-rc.5`；Desktop 运行时 `0.2.2-rc.1`（在 `app.asar` 内）
+- **v1/v2 分界**：§0–§6 的 ✅ 是 CONTRACT **v1** 的历史结果；CONTRACT v2 的 harness 变更记录在 §0.3。
+  **v2 第一批集成验证见 §7（task-7，9/9 阶段 ALL STAGES PASSED）**，
+  **v2 第二批-1（复制报告 + 汇总卡片筛选）集成验证见 §8（task-9，9/9 阶段 ALL STAGES PASSED）**。
+  原始证据另见 `.review/v0.3.0-verification.md` 与 `.review/v0.3.0-batch2-verification.md`。
 - 记录中的本机仓库路径已脱敏为 `<repo>`，其余输出与命令保持原样
 - 隔离环境：`DSH_HOME=<repo>/.dsh-test`（工作区内，gitignore）
   - **全程未写 `~/.dsh`**：脚本会忽略从 shell 继承的 `DSH_HOME`，并对 `E2E_DSH_HOME` 做「必须在仓库内」的硬围栏
@@ -123,17 +128,72 @@ Chrome:   --headless=new --no-sandbox --disable-dev-shm-usage --user-data-dir=/t
 （应为面板子树，shell 自带滚动容器）；② 只看了直接父节点，未跳过 `display:contents` 的布局透明宿主。
 两处修正后 16/16 全绿，且修正后的判据比原判据更贴近真实布局语义。
 
+## 0.3 CONTRACT v2 harness 更新（task-6，2026-11-06）— 断言变更与待复跑状态
+
+**本轮（task-6）只改脚本/文档，未跑全量 e2e**：Host v2（`dsh/src/host/index.js`）与 Client v2
+（`dsh/src/client/store.js`、`panel.jsx`、`lib/client.js`）由另外两个队友并行实现；不跑
+`run-all` / `e2e-api` / `e2e-failure-paths` / 真实浏览器阶段。静态自检已通过：所有 `*.sh` 过
+`bash -n`，所有 `*.mjs` 过 `node --check`。
+
+> **后续状态（task-7，2026-11-06）**：上述 harness 已在实现落地后完整执行，**9/9 阶段通过**；
+> 结果与日志路径见 §7。下面「未运行」的表述仅描述 task-6 当时的状态。
+
+**本轮已跑的三个纯 harness（对当前工作树，不启动 dsh、不碰真实 profile）**：
+
+```
+node dsh/test/e2e/view-contract.mjs        -> pass=196 fail=0
+node dsh/test/e2e/load-client-bundle.mjs   -> pass=36  fail=0
+node dsh/test/e2e/panel-behavior.mjs       -> pass=122 fail=0
+```
+
+这三项只 import `src/client/view.js` / 装载 `lib/client.js`，不依赖 Host→profile→HTTP 链路，因此可以
+在实现方并行改动期间先验证脚本自身。`e2e-api` / `e2e-failure-paths` / `e2e-browser-layout` **未运行**，
+等 task-7 集成复跑。
+
+**已知契约缺口（task-6 读当时工作树发现，均已在 task-7 前修复）**：
+
+1. ~~失败响应缺 `detail`/`elapsedMs`~~：已修。Host 失败体现在是
+   `{"ok":false,"error":"exit-1","detail":"check.js stderr: …","elapsedMs":29}`（CONTRACT v2.1 已同步）。
+2. ~~`cordis.patch.yml` 缺 `checkTimeoutMs`~~：已修。默认块现有 `autoCheck/staleAfterHours/keepHistory/
+   checkTimeoutMs: 900000`，`e2e-api` 的 dump-config 断言从 `skip` 变为实际 PASS。
+3. 其余 v2 形状已按代码核对一致：`/health.capabilities/lastCheck`、`/snapshot`（`full=1` 才带 report，
+   `cache:{ttlMs,autoCheck}`）、`/status.running{startedAt,elapsedMs,mode,waiters}`、`/history`（默认 20/上限
+   100）、`force=0` 缓存命中、attach 共享（`fresh`/`attached`/`shared`）、取消返回 500 `cancelled`
+   且不覆盖快照、`state.json`（`schemaVersion:1`、原子写、0700/0600、损坏忽略、写失败只记日志）、
+   spawn 参数与 4 个 env 卫生变量。
+
+| 脚本 | v2 主要变更（新增断言，不删 v1 覆盖） | 等哪个实现落地 | 预判风险 |
+|---|---|---|---|
+| `e2e-api.sh` | 双服务器矩阵：① contract server（`CLI_DOCTOR_CHECK_PATH` stub 检查器，记录 argv/env/spawn 次数 + 可调延迟）跑全部 HTTP 约定；② real server 跑一次真实 full 诊断并重启验证持久化。新增：health `capabilities/lastCheck`；`/snapshot`（无缓存 200+null、默认不含 report、`full=1` 含 report、`cache.ttlMs/autoCheck`）；`/status`（idle/running/lastCheck）；`/history`（默认/limit 上限）；全部新路由的 403/405/404；`?mode=fast|full` 的 argv（`--fast`/`--no-update`）与 spawn env 卫生（4 个变量）；`force=0` cache hit、默认 fresh；并发两请求 200 + 同 `checkedAt` + 只 spawn 一次（`fresh`/`attached`/`shared`）；运行中 `/status.busy`、`/health.busy`；`/check/cancel` 运行中 true/空闲 false、等待者 500 `cancelled`、busy 释放、取消不覆盖快照；`state.json` 重启恢复、损坏文件忽略、只读目录下写失败不影响响应、目录 0700/文件 0600、`schemaVersion:1`；真实诊断 `mode=full` + 重启恢复真实快照；bundle 字节含 v2 路由与主题 token。v1 围栏 4 类拒绝/3 类放行、405/404、boot manifest、UI-1 字节断言全部保留 | Host v2 全部路由 + `cordis.patch.yml` 默认配置块（`autoCheck/staleAfterHours/keepHistory/checkTimeoutMs`）；bundle 字节断言还需 Client v2 重建 `lib/client.js` | ① `cordis.patch.yml` 默认配置键由 Lead/契约维护，缺失时脚本降级为 `skip` 而非 FAIL；② stub checker 依赖 spawn env 透传（`{...process.env}`），若实现改为白名单 env 会连锁失败；③ 取消的 SIGTERM→5 s SIGKILL 升级只做了 `cancelled:true` 断言，未单独验证 SIGKILL 路径；④ 0700/0600 与写失败容器化在个别文件系统/CI 上可能表现不同 |
+| `view-contract.mjs` | 依赖语义断言改为 CONTRACT §v2.3 的字面量：「候选更新 · 待核验」（tone=review）+「依赖更新需人工核验」；新增「v1 矛盾组合（有可用更新 + 无法判断）必须不存在」遍历断言；`summarize()` 新增 `depCount/conflictCount/uncertainCount` 且五个工具层计数口径不变；畸形依赖条目/impact 容错用例；可选 `formatAge/stalenessOf` 降级 SKIP | Client v2 的 `dsh/src/client/view.js`（导出名保持不变） | 若实现把 `候选更新 · 待核验` 拆成两段或改名，断言会失败；新计数只按契约名 `depCount/conflictCount/uncertainCount` 断言 |
+| `panel-behavior.mjs` | 重写为「每个场景重新装载 bundle」以得到干净的模块级 store，覆盖：v2 挂载引导顺序 health→snapshot(full=1) 且 `autoCheck=false` 不发 POST；`autoCheck=true` 自动检查恰好一次、重挂载不再触发；快照恢复立即渲染（无 POST）+ 相对时间；过期快照触发一次自动检查并刷新；loading/aria-busy/双击守卫；取消按钮 → `POST /check/cancel` → 500 `cancelled` 可读文案 + 重试；`report:null`/畸形报告/exit-1/未知错误码容错；fast 结果显式标注；完整报告（五生态/五计数/meta/skipped/footer/升级命令/版本线）+ v2 依赖语义与「依赖冲突/依赖待核验」计数；UI-1 唯一滚动容器/固定表头/根撑满/内容可达全部保留；卸载→重挂载保留结果且无残留 interval | Client v2（`store.js` + `panel.jsx` + 重建 `lib/client.js`） | ① 文案类断言（取消/快速/依赖计数）依赖具体中文措辞，实现若用同义改写会失败；② 「root 直接子节点」断言放宽为 header+scroll 必须是直接子节点（v2 工具栏可能新增一层），其余 UI-1 精确断言不动；③ 自动检查依赖 effect 链，测试用空宏任务 settle，若实现使用更长延迟需调整 |
+| `browser-layout-probe.mjs` | 服务器用 `CLI_DOCTOR_AUTO_CHECK=0` 启动，隔离真实 70 s 自动诊断；探针**优先使用缓存恢复的报告**做布局测量（来自 e2e-api 落盘快照），缓存为空才点诊断按钮跑真实诊断；原有 16 项布局/滚动断言逐条保留（新增相对时间 2 项）；按钮查找兼容「一键诊断当前状态/重新诊断/诊断当前状态」 | Client v2 面板 + e2e-api 落盘快照（独立跑时回落为点按钮） | ① 若浏览器阶段在 e2e-api 之前单独跑且无快照，会回落到 ~70 s 真实诊断（超时上限 6 min 不变）；② 相对时间/过期文案断言依赖实现措辞 |
+| `load-client-bundle.mjs` | 首屏断言去掉 v1 的「首次打开不会自动检查」（v2 已有 stale-gate 自动检查），改为断言 `[data-dsh-cli-doctor-scroll]` 首屏存在且旧承诺已移除；新增 bundle 字节断言：`/snapshot`、`/status`、`/check/cancel`、`上次诊断`、`候选更新`、`依赖更新需人工核验`、`--dsw-alias-`；纯度/loader/slot/disposer 断言不变 | Client v2 重建后的 `lib/client.js` | 文案/端点字符串必须真的出现在 bundle 字节里；实现若把文案移到常量文件仍会内联进 bundle，一般可命中 |
+| `e2e-failure-paths.sh` | 新增：错误体带 v2 `elapsedMs`、exit-1 带 stderr 尾 `detail`；失败矩阵前后 `/snapshot.checkedAt` 不变（失败不覆盖快照）；`/status.busy=false`；超时分支文案改为 `checkTimeoutMs`（默认 900 s）口径 | Host v2 错误体与快照持久化 | `detail` 可能被实现做成可选字段；若省略，这一条会失败 |
+| `run-all.sh` | 只更新阶段说明（9 阶段，注明仅 e2e-api 跑真实诊断、浏览器阶段复用快照） | 无 | 无 |
+| `e2e-browser-layout.sh` | 服务器启动加 `CLI_DOCTOR_AUTO_CHECK=0` 并打印说明 | 无 | 若运行时忽略该 env，自动检查会与探针点击竞争（超时上限仍覆盖） |
+
+**复跑顺序（task-7 建议）**：`npm run build` + `npm test` → `load-client-bundle` → `view-contract`
+→ `panel-behavior` → `purity-negative` → `codex-decouple` → `e2e-api --fresh` → `failure-paths`
+→ `e2e-browser-layout`。预计耗时约 4–6 分钟（其中真实 full 诊断约 70 s；stub 矩阵秒级）。
+
+**断言数量**：`e2e-api` 约 150 条（v1 62 条全部保留 + v2 新增，待 task-7 回填实测）；
+`panel-behavior` 122 条（2026-11-06 实测 pass=122）；`view-contract` 196 条（实测 pass=196）；
+`load-client-bundle` 36 条（实测 pass=36）；`browser-layout-probe` 18 条（原 16 + 2）。
+
 ## 1. 交付的可重跑脚本
 
 | 文件 | 作用 |
 |---|---|
 | `dsh/test/e2e/lib.sh` | 公共库：DSH_HOME 围栏、断言、JSON 取值、curl 取证、进程清理 |
-| `dsh/test/e2e/run-all.sh` | 全量编排（7 阶段 + 汇总），`--port` / `--skip-e2e` |
-| `dsh/test/e2e/e2e-api.sh` | 真实 scratch profile：plugin add → dump-config → 起服务 → HTTP 矩阵 → combo 包 → 真实诊断 → 单飞 |
-| `dsh/test/e2e/e2e-failure-paths.sh` | 用 `CLI_DOCTOR_CHECK_PATH` 接缝在独立端口验证 exit-1 / invalid-json / output-too-large |
-| `dsh/test/e2e/load-client-bundle.mjs` | 独立装载 `lib/client.js`：loader 外壳、inject/apply、两个 slot 参数、disposer、首屏 SSR；`require` 只放行 react 两个模块 |
-| `dsh/test/e2e/view-contract.mjs` | 直接 import `src/client/view.js`：statusFor/recommendationFor/分组/计数 + 11 组畸形报告容错 |
-| `dsh/test/e2e/panel-behavior.mjs` | jsdom + 真实 React 点击流：挂载不发 POST、loading/aria-busy、错误 role=alert+重试、五生态顺序、条目字段、卸载无残留定时器 |
+| `dsh/test/e2e/run-all.sh` | 全量编排（**9 阶段** + 汇总），`--port` / `--skip-e2e` |
+| `dsh/test/e2e/e2e-api.sh` | **v2**：真实 scratch profile → 起 A) contract server（stub 检查器）跑 HTTP 矩阵（health/snapshot/status/history/check/cancel、围栏/405/404、cache/attach/cancel、持久化/损坏容错）→ 起 B) real server 跑一次真实诊断并重启验证持久化 → combo 包与 v2 client 字节断言 |
+| `dsh/test/e2e/e2e-failure-paths.sh` | **v2**：`CLI_DOCTOR_CHECK_PATH` 接缝在独立端口验证 exit-1 / invalid-json / output-too-large，并断言 `elapsedMs`/`detail`、失败不覆盖快照 |
+| `dsh/test/e2e/load-client-bundle.mjs` | **v2**：独立装载 `lib/client.js`：loader 外壳、inject/apply、两个 slot 参数、disposer、首屏 SSR、v2 端点/文案/主题 token 字节断言；`require` 只放行 react 两个模块 |
+| `dsh/test/e2e/view-contract.mjs` | **v2**：直接 import `src/client/view.js`：statusFor/recommendationFor（含依赖语义修复）、分组/计数（含 `depCount/conflictCount/uncertainCount`）+ 13 组畸形报告容错 |
+| `dsh/test/e2e/panel-behavior.mjs` | **v2**：jsdom + 真实 React：挂载引导（health→snapshot→自动检查一次）、快照恢复、过期自动检查、取消、loading/aria-busy、错误 role=alert+重试、五生态顺序、依赖语义、卸载/重挂载状态保留 |
+| `dsh/test/e2e/browser-layout-probe.mjs` | **v2**：Chrome + CDP 真实布局；优先用缓存快照，缓存空才点按钮；`CLI_DOCTOR_AUTO_CHECK=0` 隔离自动诊断；16 项布局/滚动断言保留 + 相对时间 2 项 |
+| `dsh/test/e2e/e2e-browser-layout.sh` | v2：以 `CLI_DOCTOR_AUTO_CHECK=0` 起服务后驱动 `browser-layout-probe.mjs` |
 | `dsh/test/e2e/purity-negative.sh` | 纯度门禁负面验证（在 `.dsh-test/purity-pkg` 副本上做，绝不改真包） |
 | `dsh/test/e2e/build-repro.sh` | 构建幂等 + git status 不变 + `sync-shared --check` + `npm test` |
 | `dsh/test/e2e/codex-decouple.sh` | Codex 路径零改动 + smoke 测试 + vendored 字节一致 + 半体自包含 |
@@ -334,12 +394,17 @@ $ curl -b cookies.txt "<该 combo URL>" -> 200  10459607 bytes
 
 ## 5. 未验证项（明确不当作通过）
 
-1. **8 分钟超时分支的端到端复现**：需要真实等待 8 分钟；本报告只验证了 exit-1 / invalid-json / output-too-large
-   三条真实 HTTP 失败路径，超时分支由作者注入 `timeoutMs` 的单测覆盖。
+1. **超时分支的端到端复现**：CONTRACT v2.2 起 `checkTimeoutMs` 默认 900 000 ms（15 min），真实等待不可行；
+   本报告只验证了 exit-1 / invalid-json / output-too-large 三条真实 HTTP 失败路径，超时分支由作者注入
+   `timeoutMs` 的单测覆盖。**v2 新增未验证**：取消时 SIGTERM→5 s→SIGKILL 的升级路径只断言了
+   `cancelled:true` 与 busy 释放，未观测 SIGKILL 本身。
 2. **~~真机桌面侧栏渲染~~（已补齐）**：真实浏览器布局/滚动已由 §0.2 的 headless Chrome + CDP 实测关闭
    （rootClientH=757、bodyScrollH=19112、滚到底 18442/18442、顶栏 16→16）；运行中的 desktop GUI 由 §6 的
    安装确认关闭。剩余差异仅是 Electron 壳层外观，属 Lead 的桌面会话范畴。
-3. **跨版本/跨平台**：仅在 `dsh 0.2.0-rc.2` / macOS / Node v26.8.1 上验证。
+3. **跨版本/跨平台**：v1 在 `dsh 0.2.0-rc.2` 上验证；v2 已在 PATH `dsh 0.2.1-rc.5` + Desktop
+   `0.2.2-rc.1` 上完整复跑（§7），仍未覆盖其他 dsh 版本/平台。
+5. **v2 契约实现与 harness 的一致性**：已由 task-7 集成复跑关闭（9/9 阶段通过）；剩余 4 条
+   未验证项见 §7.4。
 4. **~~`~/.dsh` 与 desktop profile~~（已由 Lead 补齐）**：verifier 全程未触碰；安装效果见 §6。
 
 ---
@@ -361,3 +426,154 @@ verifier 的未验证项 2 与 4 由 Lead 在本机真实 `desktop` profile 上�
 
 结论：插件已安装进 `desktop` profile 并在**运行中的 GUI 里即时生效**，侧栏入口与主机路由均可用，
 真实诊断链路端到端跑通。剩余唯一未覆盖项为「8 分钟超时分支的真实等待复现」（已由注入式单测覆盖）。
+
+---
+
+## 7. v2 集成验证结果（task-7，2026-11-06 15:18–15:25）
+
+环境：macOS 27.2（arm64）· Node v26.8.1 · PATH `dsh 0.2.1-rc.5` · Desktop 运行时 `0.2.2-rc.1` ·
+仓库 HEAD `3b56048` + v2 工作树修改 · `DSH_HOME=<repo>/.dsh-test`（继承的 `~/.dsh` 被 lib.sh 显式忽略）。
+
+### 7.1 结论
+
+**9/9 阶段通过，`ALL STAGES PASSED`，`RUN_ALL_EXIT=0`**；build 两次字节一致、单测 124/124、
+client bundle 纯度达标（仅 `react` / `react/jsx-runtime`）。v0.3.0 第一批**可交付**。
+
+### 7.2 阶段结果
+
+命令：`cd dsh && bash test/e2e/run-all.sh --port 19390`
+主日志：`.dsh-test/e2e-20261106-152230/`（含 `run-all.console.log`）。
+
+| # | 阶段 | 结果 | 断言 | 子日志 |
+|---|---|---|---|---|
+| 1 | build reproducibility | PASS | 9/9（+1 unverified：`EXPECTED_CLIENT_SHA256` 未钉住） | `e2e-20261106-152230/` |
+| 2 | client bundle loader | PASS | 36/36 | 无独立日志（stdout） |
+| 3 | view contract | PASS | 196/196 | 无独立日志 |
+| 4 | panel behavior (jsdom) | PASS | 122/122 | 无独立日志 |
+| 5 | purity gate negative | PASS | 14/14 | `e2e-20261106-152233/` |
+| 6 | codex decoupling | PASS | 10/10 | `e2e-20261106-152233/` |
+| 7 | real DSH end-to-end (v2) | PASS | **217/217** | `e2e-20261106-152234/`（240 个证据文件） |
+| 8 | host failure paths | PASS | 20/20（+1 unverified：超时分支） | `e2e-20261106-152315/` |
+| 9 | real browser layout | PASS | 2/2（probe 18/18） | `e2e-20261106-152321/` |
+
+合计 **626 条阶段级断言全部通过**。
+
+### 7.3 关键证据（摘要，原文见 `.review/v0.3.0-verification.md`）
+
+- 并发 attach：`a=200 b=200`、同一 `checkedAt`、spawn 仅 1 次、`cache: fresh/attached`、`shared:true`。
+- 快照/历史/持久化：`state.json` 2435 B（`schemaVersion:1`、0700/0600）跨重启恢复；
+  `/snapshot` 1432 B summary 默认不含 report，`?full=1` 1449 B 含 report；`/history` 4 条。
+- 取消：waiter 收 `500 {"error":"cancelled","elapsedMs":163}`，busy 在子进程 close 后复位，
+  快照 checkedAt 前后不变；空闲取消返回 `cancelled:false`。
+- 缓存：`force=0` → `cache:"hit"` 且不 spawn；默认 `force=1` → `fresh` 且 checkedAt 前进。
+- 真实 full 诊断：200、177,298 B、`elapsed_ms=19399`、五生态齐全；重启后 `?full=1` 177,627 B 恢复。
+- 真实 fast 档（独立探针）：`mode:"fast"`、`elapsedMs=8460`，npm/pip/rust 的 `latest` 全为 null，
+  homebrew 14/14 有 latest。
+- env 卫生：`HOMEBREW_NO_AUTO_UPDATE/HOMEBREW_NO_ANALYTICS/PIP_DISABLE_PIP_VERSION_CHECK/NO_COLOR`
+  在 stub spawn 中均为 `1`；fast argv 含 `--fast`，full 不含。
+- 真实浏览器：面板子树唯一滚动容器、父层 flex/column、header 固定在 16px、
+  `bodyScrollH=21954 / bodyClientH=670`、滚到底 `21284/21284`、footer 可见。
+
+### 7.4 首跑失败与修复（harness 缺陷，非实现 bug）
+
+第一次全量 8/9（e2e-api 5 条 FAIL，日志 `.dsh-test/e2e-20261106-151901/`）：
+并发请求的 `*.status`/`*.body` 为空、attach 请求被误判。
+根因是 task-6 的 `bg_post()` 用 `PID="$(bg_post …)"` 命令替换启动后台 curl，PID 属于被回收的子 shell，
+主 shell `wait` 立即返回且读到未写入的文件；残留请求又使后续 16b 的运行 mode 变为 `fast`。
+修复：`bg_post` 改为写全局 `BG_PID`（只改 `dsh/test/e2e/e2e-api.sh`），修复后单跑 e2e-api 217/217，
+全量复跑 9/9 通过。
+
+### 7.5 护栏
+
+- `git status --short`：仅预期改动（`dsh/src/{host,client}`、`dsh/lib`、`dsh/test`、`CONTRACT.md`、
+  `cordis.patch.yml`、`dsh/README.md`、`dsh/test/e2e/**`、`.review/`、设计文档、`store.js`）；
+  Codex 保护路径（`plugin.json`/`mcp.json`/`codex-server.js`/`codex-bridge.js`/`dashboard/`/`.agents/`/
+  `SKILL.md`/根 `test/`/根 `package.json`）零出现。
+- `git diff --check` rc=0；无残留 dsh 进程、端口已释放。
+- `~/.dsh` 隔离：自测试标记之后无任何 e2e 产物（无 `storages/cli-doctor`、无 `profiles/scratch`）；
+  唯一 2 个新文件是本次 agent 会话自身的 runtime 日志/投影缓存，与测试无关。
+
+### 7.6 未验证项（明确不当作通过）
+
+1. `checkTimeoutMs`（默认 900 000 ms）超时分支未端到端复现，由 Host 注入 `timeoutMs` 的单测覆盖。
+2. 取消的 SIGTERM→5 s→SIGKILL 升级路径只断言 `cancelled:true` + busy 复位，未单独观测 SIGKILL。
+3. `EXPECTED_CLIENT_SHA256` 未钉住（build-repro 的 1 条 unverified），仅证明两次构建字节稳定
+   （sha256 `4e0d6b1db289…`）。
+4. 真实 desktop GUI 的最终视觉验收不在本任务内（真实浏览器布局/滚动已由 Chrome 阶段覆盖）。
+
+---
+
+## 8. v2.8 第二批-1 集成验证结果（task-9，2026-11-06 16:12–16:15）
+
+验证对象：复制诊断报告（Markdown / 原始 JSON）+ 汇总卡片即时筛选（CONTRACT §v2.8）。
+环境同 §7（macOS 27.2 / Node v26.8.1 / PATH `dsh 0.2.1-rc.5` / Desktop `0.2.2-rc.1`）；
+`DSH_HOME=<repo>/.dsh-test`，未写 `~/.dsh`。
+
+### 8.1 结论
+
+**9/9 阶段 `ALL STAGES PASSED`，`RUN_ALL_EXIT=0`；npm test 143/143；788 条阶段级断言全通过**
+（+2 条显式 unverified）。本轮**一次通过**，未发现实现 bug；只新增 e2e 断言与 README 两节。
+第二批-1 **可交付**。
+
+### 8.2 阶段结果
+
+命令：`cd dsh && bash test/e2e/run-all.sh --port 19390`
+主日志：`.dsh-test/e2e-20261106-161227/`（含控制台证据 `run-all.console.txt`）；
+子日志：e2e-api `.dsh-test/e2e-20261106-161234/`、failure-paths `.dsh-test/e2e-20261106-161429/`、
+browser `.dsh-test/e2e-20261106-161434/`。
+
+| # | 阶段 | 结果 | 断言（较 task-7 增量） |
+|---|---|---|---|
+| 1 | build reproducibility | PASS | 9/9（+1 unverified：sha 未钉住）；`lib/client.js` 80,317 B，sha256 `a02bfb42e102…` |
+| 2 | client bundle loader | PASS | 46/46（+10） |
+| 3 | view contract | PASS | 288/288（+92） |
+| 4 | panel behavior（jsdom） | PASS | 175/175（+53） |
+| 5 | purity gate negative | PASS | 14/14 |
+| 6 | codex decoupling | PASS | 10/10 |
+| 7 | real DSH end-to-end | PASS | 224/224（+7 served-bytes 断言；真实 full 诊断 90.8 s / 177,298 B） |
+| 8 | host failure paths | PASS | 20/20（+1 unverified：超时分支） |
+| 9 | real browser layout | PASS | 2/2（probe 25/25，+7；原 16 项布局/滚动断言保留） |
+
+合计 **788 条阶段级断言通过**。
+
+### 8.3 关键证据
+
+- **复制报告**：报告渲染后存在「复制报告」（Markdown，`aria-label` 声明“可直接粘贴给 AI”）与
+  「复制原始 JSON」两个 `type="button"`；jsdom clipboard seam 收到的 Markdown 含
+  `# CLI Doctor 诊断报告` / 基本信息 / 汇总计数 / 可行动工具明细（`#### ripgrep`）/ 依赖冲突与待核验 /
+  只读说明 / 数据来源；JSON 可 parse 并深等于原报告且等于 `JSON.stringify(report,null,2)`；
+  复制前后无网络请求、报告不变；成功反馈「已复制」`role=status` `aria-live=polite`，约 2 s 后消失；
+  `writeText` 抛错 → 只读 textarea 降级（含完整 Markdown + “剪贴板写入失败…denied” + 关闭按钮）；
+  `navigator.clipboard` 缺失 → 同样 textarea 降级（“当前环境不支持剪贴板写入”），JSON 可 parse 回原报告。
+- **汇总卡片筛选**：5 张卡均 `<button type="button" aria-pressed>`；无筛选时「已发现工具」为 true；
+  点击「有可用更新」→ 可见工具卡恰为 4 张匹配卡、活动卡 pressed=true、说明行写明「依赖层已隐藏」、
+  依赖卡消失、分块头「匹配 N / 共 M 个工具」、「清除筛选」出现；再次点击同卡 / 「清除筛选」/
+  「已发现工具」三种方式均恢复全量；「建议更新」→ 仅 ripgrep；「需核验或暂缓」→ 3 张；
+  「目标待核验」→ 仅 pip；空结果显示「没有符合…」+ 清除入口；筛选跨卸载/重挂载保留。
+- **一致性**：view-contract 对 7 工具 fixture 穷举 `toolMatchesSummaryFilter` 与 `summarize()`
+  五计数（toolCount/updateCount/recommendedCount/reviewCount/unknownCount = 7/4/1/4/2 全等），
+  且 `groupBlock.updateCount` 用同一判定；Markdown 对“请运行/请执行/建议执行/立即执行/自动执行升级”
+  五类诱导式样断言不存在。
+- **真实浏览器**：真实报告面板上复制按钮可发现、5 张卡带 `aria-pressed`；点击卡后真实 DOM 出现
+  「依赖层已隐藏」+「匹配 N / 共 M」+「清除筛选」，清除后说明行消失；原 16 项布局断言保持绿色
+  （唯一滚动容器、父层 flex/column、header 固定 16→16、滚到底 21284/21284、footer 可见）。
+- **产物字节**：真实 combo bundle（2,093,637 B）包含「复制报告」「复制原始 JSON」
+  「data-dsh-cli-doctor-copy」「data-dsh-cli-doctor-copy-feedback」「清除筛选」「匹配 」
+  「aria-pressed」——GUI 实际收到的产物即带这两项能力。
+
+### 8.4 本轮 e2e/文档变更
+
+`panel-behavior.mjs`（+53）、`view-contract.mjs`（+92）、`load-client-bundle.mjs`（+10）、
+`e2e-api.sh`（+7 served-bytes）、`browser-layout-probe.mjs`（+7，原断言零删改）、
+`dsh/README.md`（新增「面板操作（第二批-1）」：复制 Markdown/JSON、剪贴板降级、汇总卡筛选与清除方式）。
+未改 `src/**`、`lib/**`、`CONTRACT.md`、`cordis.patch.yml`。
+
+### 8.5 护栏与未验证项
+
+- `git status --short` 仅预期改动；Codex 保护路径出现 0；`git diff --check` rc=0；
+  `~/.dsh` 自 marker 后 e2e 产物 0 个（仅本 agent 会话自身 2 个 runtime 日志/投影缓存）；
+  无残留进程/端口。
+- 未验证：① 真实浏览器剪贴板写入内容未回读（headless 权限模型不同；内容由纯函数 + jsdom seam 证明）；
+  ② 「已复制」2 s 消失只在 jsdom 计时；③ `checkTimeoutMs` 超时分支未端到端复现（单测覆盖）；
+  ④ SIGKILL 升级未单独观测；⑤ `EXPECTED_CLIENT_SHA256` 未钉住（build-repro 唯一 unverified）；
+  ⑥ desktop GUI 最终视觉验收不在本任务内。均不阻塞交付。
